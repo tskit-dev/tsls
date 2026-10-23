@@ -25,6 +25,11 @@
  * is in the tree over the whole interval between them.
  */
 
+#if defined(__linux__)
+/* For posix_memalign and madvise */
+#define _DEFAULT_SOURCE
+#endif
+
 #include "tsls.h"
 
 #include <assert.h>
@@ -32,6 +37,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 /* For the innermost helpers, which GCC doesn't always inline. Inlining
  * tsls_hmm_coalesce_likelihoods also specialises it for its constant
@@ -41,6 +49,81 @@
 #else
 #define ALWAYS_INLINE inline
 #endif
+
+/* Allocate an array that is accessed at random, such as the per-node arrays
+ * walked up the tree. On Linux, large arrays are mapped directly, aligned
+ * to 2 MiB, and backed by transparent huge pages where available
+ * (MADV_HUGEPAGE), which greatly reduces TLB misses in the walks. They are
+ * mapped directly because memory from malloc may already have been touched
+ * with small pages, which madvise doesn't change. Free with tsls_large_free,
+ * with the same size. */
+#define HUGE_PAGE_SIZE ((size_t) 2 * 1024 * 1024)
+
+static inline bool
+tsls_large_alloc_uses_mmap(size_t size)
+{
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    return size >= HUGE_PAGE_SIZE / 2;
+#else
+    (void) size;
+    return false;
+#endif
+}
+
+static void *
+tsls_large_alloc(size_t size)
+{
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    size_t rounded, head, tail;
+    char *p, *aligned;
+
+    if (tsls_large_alloc_uses_mmap(size)) {
+        rounded = (size + HUGE_PAGE_SIZE - 1) & ~(HUGE_PAGE_SIZE - 1);
+        p = mmap(NULL, rounded + HUGE_PAGE_SIZE, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p == MAP_FAILED) {
+            return NULL;
+        }
+        /* Trim the mapping to a range aligned to the huge page size */
+        aligned = (char *) (((uintptr_t) p + HUGE_PAGE_SIZE - 1)
+                            & ~((uintptr_t) HUGE_PAGE_SIZE - 1));
+        head = (size_t) (aligned - p);
+        tail = HUGE_PAGE_SIZE - head;
+        if (head > 0) {
+            (void) munmap(p, head);
+        }
+        if (tail > 0) {
+            (void) munmap(aligned + rounded, tail);
+        }
+        /* Huge pages are only advice, so failure doesn't matter */
+        (void) madvise(aligned, rounded, MADV_HUGEPAGE);
+        return aligned;
+    }
+#endif
+    return malloc(size);
+}
+
+static void
+tsls_large_free(void *p, size_t size)
+{
+    if (p == NULL) {
+        return;
+    }
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    if (tsls_large_alloc_uses_mmap(size)) {
+        (void) munmap(p, (size + HUGE_PAGE_SIZE - 1) & ~(HUGE_PAGE_SIZE - 1));
+        return;
+    }
+#endif
+    free(p);
+}
+
+/* Free an array of N + 1 elements allocated with tsls_large_alloc */
+#define tsls_large_free_array(array, n)                                              \
+    do {                                                                                \
+        tsls_large_free(array, ((n) + 1) * sizeof(*(array)));                           \
+        array = NULL;                                                                   \
+    } while (0)
 
 #define MODE_VITERBI  0
 #define MODE_FORWARD  1
@@ -431,8 +514,10 @@ tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
     self->mutation_node = malloc((num_mutations + 1) * sizeof(*self->mutation_node));
     self->mutation_derived_state
         = malloc((num_mutations + 1) * sizeof(*self->mutation_derived_state));
-    self->insertion_edges = malloc((self->num_edges + 1) * sizeof(*self->insertion_edges));
-    self->removal_edges = malloc((self->num_edges + 1) * sizeof(*self->removal_edges));
+    self->insertion_edges
+        = tsls_large_alloc((self->num_edges + 1) * sizeof(*self->insertion_edges));
+    self->removal_edges
+        = tsls_large_alloc((self->num_edges + 1) * sizeof(*self->removal_edges));
     if (self->num_alleles == NULL || self->ancestral_state == NULL
         || self->site_mutations_offset == NULL || self->mutation_node == NULL
         || self->mutation_derived_state == NULL || self->insertion_edges == NULL
@@ -457,8 +542,8 @@ tsls_index_free(tsls_index_t *self)
     tsi_safe_free(self->site_mutations_offset);
     tsi_safe_free(self->mutation_node);
     tsi_safe_free(self->mutation_derived_state);
-    tsi_safe_free(self->insertion_edges);
-    tsi_safe_free(self->removal_edges);
+    tsls_large_free_array(self->insertion_edges, self->num_edges);
+    tsls_large_free_array(self->removal_edges, self->num_edges);
     return 0;
 }
 
@@ -567,23 +652,23 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     self->traceback = calloc(self->num_sites + 1, sizeof(node_state_list_t));
     self->max_likelihood_node = malloc((self->num_sites + 1) * sizeof(tsk_id_t));
 
-    self->parent = malloc((N + 1) * sizeof(*self->parent));
-    self->left_child = malloc((N + 1) * sizeof(*self->left_child));
-    self->right_child = malloc((N + 1) * sizeof(*self->right_child));
-    self->left_sib = malloc((N + 1) * sizeof(*self->left_sib));
-    self->right_sib = malloc((N + 1) * sizeof(*self->right_sib));
-    self->num_below = malloc((N + 1) * sizeof(*self->num_below));
-    self->num_inheriting = malloc((N + 1) * sizeof(*self->num_inheriting));
-    self->likelihood = malloc((N + 1) * sizeof(*self->likelihood));
-    self->allelic_state = malloc((N + 1) * sizeof(*self->allelic_state));
+    self->parent = tsls_large_alloc((N + 1) * sizeof(*self->parent));
+    self->left_child = tsls_large_alloc((N + 1) * sizeof(*self->left_child));
+    self->right_child = tsls_large_alloc((N + 1) * sizeof(*self->right_child));
+    self->left_sib = tsls_large_alloc((N + 1) * sizeof(*self->left_sib));
+    self->right_sib = tsls_large_alloc((N + 1) * sizeof(*self->right_sib));
+    self->num_below = tsls_large_alloc((N + 1) * sizeof(*self->num_below));
+    self->num_inheriting = tsls_large_alloc((N + 1) * sizeof(*self->num_inheriting));
+    self->likelihood = tsls_large_alloc((N + 1) * sizeof(*self->likelihood));
+    self->allelic_state = tsls_large_alloc((N + 1) * sizeof(*self->allelic_state));
     self->recombination_required
-        = malloc((N + 1) * sizeof(*self->recombination_required));
-    self->likelihood_cache = malloc((N + 1) * sizeof(*self->likelihood_cache));
+        = tsls_large_alloc((N + 1) * sizeof(*self->recombination_required));
+    self->likelihood_cache = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_cache));
     self->recombination_required_cache
-        = malloc((N + 1) * sizeof(*self->recombination_required_cache));
-    self->likelihood_nodes = malloc((N + 1) * sizeof(*self->likelihood_nodes));
-    self->likelihood_nodes_tmp = malloc((N + 1) * sizeof(*self->likelihood_nodes_tmp));
-    self->values_tmp = malloc((N + 1) * sizeof(*self->values_tmp));
+        = tsls_large_alloc((N + 1) * sizeof(*self->recombination_required_cache));
+    self->likelihood_nodes = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_nodes));
+    self->likelihood_nodes_tmp = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_nodes_tmp));
+    self->values_tmp = tsls_large_alloc((N + 1) * sizeof(*self->values_tmp));
 
     if (self->recombination_rate == NULL
         || self->mismatch_rate == NULL || self->traceback == NULL
@@ -625,21 +710,21 @@ tsls_hmm_free(tsls_hmm_t *self)
 {
     tsi_safe_free(self->recombination_rate);
     tsi_safe_free(self->mismatch_rate);
-    tsi_safe_free(self->parent);
-    tsi_safe_free(self->left_child);
-    tsi_safe_free(self->right_child);
-    tsi_safe_free(self->left_sib);
-    tsi_safe_free(self->right_sib);
-    tsi_safe_free(self->num_below);
-    tsi_safe_free(self->num_inheriting);
-    tsi_safe_free(self->recombination_required);
-    tsi_safe_free(self->likelihood);
-    tsi_safe_free(self->likelihood_cache);
-    tsi_safe_free(self->recombination_required_cache);
-    tsi_safe_free(self->likelihood_nodes);
-    tsi_safe_free(self->likelihood_nodes_tmp);
-    tsi_safe_free(self->values_tmp);
-    tsi_safe_free(self->allelic_state);
+    tsls_large_free_array(self->parent, self->num_nodes);
+    tsls_large_free_array(self->left_child, self->num_nodes);
+    tsls_large_free_array(self->right_child, self->num_nodes);
+    tsls_large_free_array(self->left_sib, self->num_nodes);
+    tsls_large_free_array(self->right_sib, self->num_nodes);
+    tsls_large_free_array(self->num_below, self->num_nodes);
+    tsls_large_free_array(self->num_inheriting, self->num_nodes);
+    tsls_large_free_array(self->recombination_required, self->num_nodes);
+    tsls_large_free_array(self->likelihood, self->num_nodes);
+    tsls_large_free_array(self->likelihood_cache, self->num_nodes);
+    tsls_large_free_array(self->recombination_required_cache, self->num_nodes);
+    tsls_large_free_array(self->likelihood_nodes, self->num_nodes);
+    tsls_large_free_array(self->likelihood_nodes_tmp, self->num_nodes);
+    tsls_large_free_array(self->values_tmp, self->num_nodes);
+    tsls_large_free_array(self->allelic_state, self->num_nodes);
     tsi_safe_free(self->max_likelihood_node);
     tsi_safe_free(self->traceback);
     tsi_blkalloc_free(&self->traceback_allocator);
