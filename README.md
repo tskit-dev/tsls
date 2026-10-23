@@ -29,17 +29,23 @@ module `_tsls`). It is based on the tsinfer engine:
   node from one site to the next without a recombination requires it to
   be in the tree over the whole interval between them.
 - It supports arbitrary topologies (multiple roots, no special root node).
-- It provides the Viterbi algorithm (`AncestorMatcher.find_path`, with
-  the same interface as tsinfer-hmm) and the forward and backward
-  algorithms (`forward_matrix`, `backward_matrix`), which return
-  compressed matrices.
+- It works directly on a tskit tree sequence (`tsls.TreeSequence`, which
+  can be shared between HMMs), and moves between trees with tskit's
+  `tsk_tree_position_t`, seeking straight to the first tree of a window.
+- It provides the Viterbi algorithm (`Hmm.find_path`, with the same
+  interface as tsinfer-hmm's `AncestorMatcher.find_path`) and the forward
+  and backward algorithms (`forward_matrix`, `backward_matrix`), which
+  return compressed matrices.
 - It uses tsinfer's compression (a node's value is dropped when it
   equals its parent's), a likelihood threshold and `weight_by_n`.
-- It supports multiple mutations per site and any number of alleles.
+- It supports multiple mutations per site and any number of alleles,
+  read from the tree sequence and numbered at each site as tskit does
+  (or by their index in a given list of alleles), and any (including
+  non-integer) coordinates.
 
 Paths match tsinfer-hmm except for ties. To match tsinfer's convention
 that its ultimate root node 0 is never copied, remove node 0's edges
-before building the `MatcherIndexes`; sc2ts ARGs already have an
+before building the `tsls.TreeSequence`; sc2ts ARGs already have an
 isolated node 0. The `benchmarking/` directory compares the engines on
 the sc2ts ARG, and `verification/` runs statistical validations of tsls on
 simulated ARGs (plots, not pass/fail tests).

@@ -16,7 +16,7 @@ extra_c_args = [
     '-Wcast-qual', '-Wwrite-strings', '-Wnested-externs',
     '-fshort-enums', '-fno-common']
 
-tsls_sources = ['matcher.c', 'err.c', 'tsi_blkalloc.c']
+tsls_sources = ['hmm.c', 'err.c', 'tsi_blkalloc.c']
 
 tsls_lib = static_library('tsls',
     sources: tsls_sources, dependencies: [m_dep, tskit_dep],

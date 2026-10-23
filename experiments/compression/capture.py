@@ -61,10 +61,10 @@ def sc2ts_queries():
 def capture(name, ts, query_list, mu, rho, weight_by_n, rows):
     ts_path = RESULTS / f"{name}.trees"
     ts.dump(ts_path)
-    mi = tsls.MatcherIndexes(ts, alleles=v.ALLELES)
+    mi = tsls.TreeSequence(ts)
     for query_id, label, h in query_list:
         am = v.make_matcher(
-            ts, mu, rho, weight_by_n=weight_by_n, count_distinct=True, matcher_indexes=mi
+            ts, mu, rho, weight_by_n=weight_by_n, count_distinct=True, tree_sequence=mi
         )
         (_, _, parent), matched, vm = am.viterbi_matrix(h)
         fm = am.forward_matrix(h)
@@ -148,8 +148,8 @@ def check_window(mi, ts, h, start, end, vm, rho, mu, path):
     which validates the windowing used for forward.
     """
     wts = window_ts(ts, start, end)
-    am = tsls.AncestorMatcher(
-        tsls.MatcherIndexes(wts),
+    am = tsls.Hmm(
+        wts,
         np.full(wts.num_sites, rho),
         np.full(wts.num_sites, mu),
     )
@@ -179,15 +179,13 @@ def capture_tsinfer(workload, *, num_queries, forward_sites, seed, check, rows):
     ts = drop_root_edges(tskit.load(query_dir / "reference.trees"))
     ts_path = RESULTS / f"{name}.trees"
     ts.dump(ts_path)
-    mi = tsls.MatcherIndexes(ts)
+    mi = tsls.TreeSequence(ts)
     for query_id in choose_tsinfer_queries(df, kind, num_queries, seed):
         query = df.iloc[query_id]
         assert query.query_id == query_id
         h = H[query_id]
         start, end = queries.query_window(H, query_id)
-        am = tsls.AncestorMatcher(
-            mi, np.full(ts.num_sites, rho), np.full(ts.num_sites, mu)
-        )
+        am = tsls.Hmm(mi, np.full(ts.num_sites, rho), np.full(ts.num_sites, mu))
         path, matched, vm = am.viterbi_matrix(h, start, end)
         left, _, parent = path
         truth = (str(query.truth_parents), str(query.truth_breakpoints))
@@ -235,8 +233,8 @@ def capture_tsinfer(workload, *, num_queries, forward_sites, seed, check, rows):
         wts = window_ts(ts, fstart, fend)
         wts_path = RESULTS / f"{name}_{query_id}_window.trees"
         wts.dump(wts_path)
-        fam = tsls.AncestorMatcher(
-            tsls.MatcherIndexes(wts),
+        fam = tsls.Hmm(
+            wts,
             np.full(wts.num_sites, rho),
             np.full(wts.num_sites, mu),
         )

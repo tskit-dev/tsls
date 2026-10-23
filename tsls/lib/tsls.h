@@ -47,9 +47,11 @@
 #define TSLS_PRUNE_TOP_N    2
 
 typedef int8_t allele_t;
-typedef tsk_id_t coordinate_t;
 
-/* Allow the CPython accessor AncestorMatcher.total_memory to read the
+/* The maximum number of distinct alleles at a site */
+#define TSLS_MAX_ALLELES INT8_MAX
+
+/* Allow the CPython accessor Hmm.total_memory to read the
  * current allocator usage accurately while other threads may be allocating.
  * Only total_size is atomic so it can be observed safely from the getter
  * without data races. */
@@ -70,42 +72,10 @@ extern void *tsi_blkalloc_get(tsi_blkalloc_t *self, size_t size);
 extern void tsi_blkalloc_free(tsi_blkalloc_t *self);
 
 typedef struct {
-    coordinate_t left;
-    coordinate_t right;
-    tsk_id_t parent;
-    tsk_id_t child;
-} edge_t;
-
-typedef struct _mutation_list_node_t {
-    tsk_id_t node;
-    allele_t derived_state;
-    struct _mutation_list_node_t *next;
-} mutation_list_node_t;
-
-typedef struct {
     int32_t size;
     tsk_id_t *node;
     int8_t *recombination_required;
 } node_state_list_t;
-
-/* The read-only information about a tree sequence needed for matching,
- * which can be shared between matchers in different threads. */
-typedef struct {
-    tsk_flags_t flags;
-    size_t num_sites;
-    size_t num_nodes;
-    size_t num_mutations;
-    size_t num_edges;
-    struct {
-        coordinate_t *position;
-        mutation_list_node_t **mutations;
-        tsk_size_t *num_alleles;
-        allele_t *ancestral_state;
-    } sites;
-    edge_t *left_index_edges;
-    edge_t *right_index_edges;
-    tsi_blkalloc_t allocator;
-} matcher_indexes_t;
 
 /* The compressed output of the forward and backward algorithms. At each
  * site we store a list of (node, value) pairs: the value for a node in the
@@ -122,11 +92,20 @@ typedef struct {
     tsi_blkalloc_t allocator;
 } compressed_matrix_t;
 
+/* The Li and Stephens HMM on a tree sequence. The tree sequence is borrowed,
+ * and must not be changed or freed while the HMM is in use. */
 typedef struct {
     int flags;
-    const matcher_indexes_t *matcher_indexes;
+    const tsk_treeseq_t *tree_sequence;
     size_t num_nodes;
     size_t num_sites;
+    const double *sites_position;
+    double sequence_length;
+    /* The integer encoding of the alleles: the number of alleles and the
+     * ancestral state of each site, and the derived state of each mutation */
+    tsk_size_t *num_alleles;
+    allele_t *ancestral_state;
+    allele_t *derived_state;
     /* Input LS model rates */
     double likelihood_threshold;
     int pruning_mode;
@@ -168,39 +147,33 @@ typedef struct {
     double *values_tmp;
     size_t traceback_block_size;
     size_t traceback_realloc_size;
-} ancestor_matcher_t;
-
-int matcher_indexes_alloc(matcher_indexes_t *self, const tsk_table_collection_t *tables,
-    const tsk_size_t *num_alleles, const allele_t *ancestral_state,
-    const allele_t *derived_state, tsk_flags_t options);
-int matcher_indexes_print_state(const matcher_indexes_t *self, FILE *out);
-int matcher_indexes_free(matcher_indexes_t *self);
+} tsls_hmm_t;
 
 int compressed_matrix_alloc(
     compressed_matrix_t *self, size_t num_sites, size_t block_size);
 int compressed_matrix_free(compressed_matrix_t *self);
 size_t compressed_matrix_get_total_values(const compressed_matrix_t *self);
 
-int ancestor_matcher_alloc(ancestor_matcher_t *self,
-    const matcher_indexes_t *matcher_indexes, const double *recombination_rate,
+int tsls_hmm_alloc(tsls_hmm_t *self, const tsk_treeseq_t *tree_sequence,
+    const char **alleles, tsk_size_t num_alleles, const double *recombination_rate,
     const double *mismatch_rate, double likelihood_threshold, int flags);
-int ancestor_matcher_set_pruning(ancestor_matcher_t *self, int mode, double parameter);
-int ancestor_matcher_free(ancestor_matcher_t *self);
-int ancestor_matcher_find_path(ancestor_matcher_t *self, tsk_id_t start, tsk_id_t end,
+int tsls_hmm_set_pruning(tsls_hmm_t *self, int mode, double parameter);
+int tsls_hmm_free(tsls_hmm_t *self);
+int tsls_hmm_find_path(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     const allele_t *haplotype, allele_t *matched_haplotype, size_t *path_length,
-    tsk_id_t *path_left, tsk_id_t *path_right, tsk_id_t *path_parent);
-int ancestor_matcher_find_path_matrix(ancestor_matcher_t *self, tsk_id_t start,
-    tsk_id_t end, const allele_t *haplotype, allele_t *matched_haplotype,
-    size_t *path_length, tsk_id_t *path_left, tsk_id_t *path_right,
-    tsk_id_t *path_parent, compressed_matrix_t *output);
-int ancestor_matcher_forward(ancestor_matcher_t *self, const allele_t *haplotype,
+    double *path_left, double *path_right, tsk_id_t *path_parent);
+int tsls_hmm_find_path_matrix(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
+    const allele_t *haplotype, allele_t *matched_haplotype, size_t *path_length,
+    double *path_left, double *path_right, tsk_id_t *path_parent,
     compressed_matrix_t *output);
-int ancestor_matcher_backward(ancestor_matcher_t *self, const allele_t *haplotype,
+int tsls_hmm_forward(
+    tsls_hmm_t *self, const allele_t *haplotype, compressed_matrix_t *output);
+int tsls_hmm_backward(tsls_hmm_t *self, const allele_t *haplotype,
     const double *forward_normalisation_factor, compressed_matrix_t *output);
-int ancestor_matcher_print_state(ancestor_matcher_t *self, FILE *out);
-double ancestor_matcher_get_mean_traceback_size(ancestor_matcher_t *self);
-double ancestor_matcher_get_mean_num_distinct_values(ancestor_matcher_t *self);
-size_t ancestor_matcher_get_total_memory(ancestor_matcher_t *self);
+int tsls_hmm_print_state(tsls_hmm_t *self, FILE *out);
+double tsls_hmm_get_mean_traceback_size(tsls_hmm_t *self);
+double tsls_hmm_get_mean_num_distinct_values(tsls_hmm_t *self);
+size_t tsls_hmm_get_total_memory(tsls_hmm_t *self);
 
 #define tsi_safe_free(pointer)                                                          \
     do {                                                                                \

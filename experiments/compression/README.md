@@ -15,7 +15,7 @@ uv run python report.py                               # results/report.md
 `tsinfer`), replacing their rows in an existing manifest and keeping the
 others. `report.py --cases` analyses a subset, for quick iteration.
 
-`capture.py` uses `AncestorMatcher.viterbi_matrix` and `forward_matrix`. It
+`capture.py` uses `Hmm.viterbi_matrix` and `forward_matrix`. It
 saves each result as a `CompressedMatrix` with `CompressedMatrix.dump`, next
 to the tree sequence it refers to. Reload a matrix with
 `tsls.load_compressed_matrix(path, ts)`.

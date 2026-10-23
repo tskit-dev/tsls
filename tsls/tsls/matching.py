@@ -7,66 +7,19 @@ import numpy as np
 import _tsls
 
 
-def encode_alleles(ts, alleles):
+class TreeSequence(_tsls.TreeSequence):
     """
-    Return the (ancestral_state, derived_state) arrays for the specified tree
-    sequence, encoding each state as its index in the specified list of
-    alleles. Raise a ValueError if any state is not in the list.
-    """
-    alleles = list(alleles)
-    if len(alleles) > np.iinfo(np.int8).max:
-        raise ValueError("Too many alleles")
-    allele_index = {allele: j for j, allele in enumerate(alleles)}
-    if len(allele_index) != len(alleles):
-        raise ValueError("Alleles must be unique")
-
-    def encode(states, name):
-        unique_states, inverse = np.unique(np.asarray(states), return_inverse=True)
-        code = np.zeros(len(unique_states), dtype=np.int8)
-        for j, state in enumerate(unique_states):
-            if state not in allele_index:
-                raise ValueError(f"Unknown {name}: {state!r}")
-            code[j] = allele_index[state]
-        return code[inverse]
-
-    ancestral_state = encode(ts.sites_ancestral_state, "ancestral state")
-    derived_state = encode(ts.mutations_derived_state, "derived state")
-    return ancestral_state, derived_state
-
-
-class MatcherIndexes(_tsls.MatcherIndexes):
-    """
-    The information about a tree sequence needed for matching, which can be
-    shared between matchers (including in different threads).
-
-    The states of the HMM at a given position are the nodes in the tree at
-    that position: nodes with a parent or at least one child. Isolated
-    nodes cannot be copied. Coordinates must be integers.
-
-    By default, the ancestral state of every site is 0 and every mutation has
-    derived state 1. If ``alleles`` is specified, states are instead encoded
-    as their index in this list, and ``num_alleles`` defaults to its length.
+    A tskit tree sequence in the form used by the HMM. It can be shared
+    between HMMs, including HMMs in different threads, so that it is only
+    built once.
     """
 
-    def __init__(self, ts, *, alleles=None, num_alleles=None):
-        ancestral_state = None
-        derived_state = None
-        if alleles is not None:
-            ancestral_state, derived_state = encode_alleles(ts, alleles)
-            if num_alleles is None:
-                num_alleles = np.full(ts.num_sites, len(alleles), dtype=np.uint64)
+    def __init__(self, ts):
         tables = ts.dump_tables()
         ll_tables = _tsls.LightweightTableCollection(tables.sequence_length)
         ll_tables.fromdict(tables.asdict())
         self.ts = ts
-        self.sequence_length = ts.sequence_length
-        self.num_sites = ts.num_sites
-        super().__init__(
-            ll_tables,
-            num_alleles=num_alleles,
-            ancestral_state=ancestral_state,
-            derived_state=derived_state,
-        )
+        super().__init__(ll_tables)
 
 
 class CompressedMatrix:
@@ -181,11 +134,23 @@ def load_compressed_matrix(path, ts):
         )
 
 
-class AncestorMatcher(_tsls.AncestorMatcher):
+class Hmm(_tsls.Hmm):
     """
     Runs the Viterbi, forward and backward algorithms for haplotypes against
-    the tree sequence in the specified MatcherIndexes, using the specified
-    per-site recombination and mismatch probabilities.
+    the specified tree sequence (a tskit.TreeSequence, or a tsls.TreeSequence
+    to share one between HMMs), using the specified per-site recombination
+    and mismatch probabilities.
+
+    The states of the HMM at a given position are the nodes in the tree at
+    that position: nodes with a parent or at least one child. Isolated
+    nodes cannot be copied.
+
+    Haplotypes are integer encoded. By default the alleles are numbered at
+    each site as tskit does: the ancestral state is 0 and derived states are
+    numbered from 1 in order of their first appearance at the site. Every
+    site has at least two alleles, so that 1 can be matched at a site with
+    no mutations (as in tsinfer, for an ancestor's focal sites). If
+    ``alleles`` is specified, every state is instead its index in this list.
 
     After normalisation at each site, values below likelihood_threshold are
     set to it. The experimental ``pruning`` option also sets the values of
@@ -200,17 +165,25 @@ class AncestorMatcher(_tsls.AncestorMatcher):
 
     def __init__(
         self,
-        matcher_indexes,
+        ts,
         recombination,
         mismatch,
         *,
+        alleles=None,
         likelihood_threshold=None,
         weight_by_n=None,
         extended_checks=False,
         pruning=None,
         count_distinct=False,
     ):
+        if not isinstance(ts, TreeSequence):
+            ts = TreeSequence(ts)
         kwargs = {"extended_checks": extended_checks, "count_distinct": count_distinct}
+        if alleles is not None:
+            alleles = list(alleles)
+            if len(set(alleles)) != len(alleles):
+                raise ValueError("Alleles must be unique")
+            kwargs["alleles"] = alleles
         if pruning is not None:
             mode, parameter = pruning
             if mode not in self.PRUNING_MODES:
@@ -221,13 +194,9 @@ class AncestorMatcher(_tsls.AncestorMatcher):
             kwargs["likelihood_threshold"] = likelihood_threshold
         if weight_by_n is not None:
             kwargs["weight_by_n"] = weight_by_n
-        self.ts = matcher_indexes.ts
-        super().__init__(
-            matcher_indexes,
-            recombination=recombination,
-            mismatch=mismatch,
-            **kwargs,
-        )
+        self.tree_sequence = ts
+        self.ts = ts.ts
+        super().__init__(ts, recombination=recombination, mismatch=mismatch, **kwargs)
 
     def find_path(self, h, start, end, match_out):
         """

@@ -1,6 +1,6 @@
 """
 Measures of likelihood compression for a tsls CompressedMatrix (from
-AncestorMatcher.viterbi_matrix or forward_matrix) on its tree sequence.
+Hmm.viterbi_matrix or forward_matrix) on its tree sequence.
 
 The engine stores, at each site, a list of (node, value) pairs, and every node
 in the tree takes the value of its nearest ancestor in the list. Because

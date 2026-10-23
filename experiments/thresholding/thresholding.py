@@ -206,7 +206,7 @@ def run_threading_task(num_samples, seed, quick):
     ts, h, true_parent, near = threading_case(num_samples, seed)
     m = ts.num_sites
     mu, rho = v.hmm_params(v.THREADING_DEFAULTS["k"])
-    mi = tsls.MatcherIndexes(ts, alleles=v.ALLELES)
+    mi = tsls.TreeSequence(ts)
     true_switch = np.where(true_parent[1:] != true_parent[:-1])[0] + 1
     rows = []
     exact_posterior = None
@@ -218,7 +218,7 @@ def run_threading_task(num_samples, seed, quick):
             rho,
             weight_by_n=False,
             count_distinct=True,
-            matcher_indexes=mi,
+            tree_sequence=mi,
             **kwargs,
         )
         left, right, parent, path, matched, seconds = run_viterbi(am, ts, h)
@@ -291,14 +291,14 @@ def run_calibration_task(setting, seed, quick):
     m = ts.num_sites
     n = ts.num_nodes
     rho = switches / m
-    mi = tsls.MatcherIndexes(ts, alleles=v.ALLELES)
+    mi = tsls.TreeSequence(ts)
     queries = []
     for _ in range(3 if quick else 5):
         path = v.sample_prior_path(present, continuous, np.full(m, rho), n, rng)
         queries.append((path, v.mutate_along_path(A, path, mu, rng)))
     rows = []
     for method, parameter, kwargs in method_grid(quick, rho, n, viterbi=False):
-        am = v.make_matcher(ts, mu, rho, weight_by_n=True, matcher_indexes=mi, **kwargs)
+        am = v.make_matcher(ts, mu, rho, weight_by_n=True, tree_sequence=mi, **kwargs)
         num_bins = len(CALIBRATION_BINS) - 1
         count = np.zeros(num_bins)
         total_p = np.zeros(num_bins)
@@ -353,7 +353,7 @@ SC2TS_SAMPLED_SITES = 100
 @functools.lru_cache(maxsize=1)
 def load_sc2ts(size):
     """
-    Return the (ts, matcher_indexes, H, kind, k) tuple for the sc2ts sub-ARG
+    Return the (ts, tree_sequence, H, kind, k) tuple for the sc2ts sub-ARG
     of the specified size, with the vestigial 0 -> 1 edge removed so that
     node 0 is isolated (as in benchmarking/engines.py).
     """
@@ -363,7 +363,7 @@ def load_sc2ts(size):
     tables = ts.dump_tables()
     tables.edges.keep_rows(tables.edges.parent != 0)
     ts = tables.tree_sequence()
-    mi = tsls.MatcherIndexes(ts, alleles=v.ALLELES)
+    mi = tsls.TreeSequence(ts)
     query_dir = SC2TS_DATA / "queries_scaling"
     H = np.load(query_dir / "queries.npz")["H"]
     df = pd.read_csv(query_dir / "queries.csv")
@@ -421,7 +421,7 @@ def run_sc2ts_task(size, query_id, quick):
             rho,
             weight_by_n=False,
             count_distinct=True,
-            matcher_indexes=mi,
+            tree_sequence=mi,
             **kwargs,
         )
         left, right, parent, _, matched, seconds = run_viterbi(am, ts, h)

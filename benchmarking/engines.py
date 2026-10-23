@@ -106,7 +106,8 @@ def path_haplotype(ts, left, right, parent):
 class AncestorMatcherEngine:
     """
     Base class for the engines with tsinfer's AncestorMatcher interface,
-    which differ only in how the MatcherIndexes are made.
+    which differ only in how the shared reference (tsinfer's MatcherIndexes
+    or a tsls TreeSequence) and the per-query matcher are made.
 
     If mismatch_threshold is specified, normalised likelihoods are not
     allowed to drop below that of mismatch_threshold mismatches, as in
@@ -115,11 +116,10 @@ class AncestorMatcherEngine:
 
     By default, states are encoded as indexes into ALLELES. If alleles is
     None, the ancestral state of every site is 0 and every mutation has
-    derived state 1, as in tsinfer. weight_by_n is False as in sc2ts;
-    tsinfer uses True.
+    derived state 1, as in tsinfer (tsls numbers the alleles at each site
+    as tskit does, which is the same for tsinfer's data). weight_by_n is
+    False as in sc2ts; tsinfer uses True.
     """
-
-    module = None
 
     def __init__(
         self,
@@ -140,9 +140,13 @@ class AncestorMatcherEngine:
             self.likelihood_threshold = mu**mismatch_threshold * 0.99
         self.recombination = np.full(ts.num_sites, rho)
         self.mismatch = np.full(ts.num_sites, mu)
-        self.matcher_indexes = self.make_matcher_indexes(ts, alleles)
+        self.alleles = alleles
+        self.reference = self.make_reference(ts, alleles)
 
-    def make_matcher_indexes(self, ts, alleles):
+    def make_reference(self, ts, alleles):
+        raise NotImplementedError
+
+    def make_matcher(self):
         raise NotImplementedError
 
     def match(self, h, start=0, end=None):
@@ -152,13 +156,7 @@ class AncestorMatcherEngine:
         """
         if end is None:
             end = self.num_sites
-        matcher = self.module.AncestorMatcher(
-            self.matcher_indexes,
-            self.recombination,
-            self.mismatch,
-            likelihood_threshold=self.likelihood_threshold,
-            weight_by_n=self.weight_by_n,
-        )
+        matcher = self.make_matcher()
         matched = np.zeros(self.num_sites, dtype=np.int8)
         left, right, parent = matcher.find_path(h.astype(np.int8), start, end, matched)
         stats = {
@@ -176,10 +174,18 @@ class AncestorMatcherEngine:
 
 class TsinferEngine(AncestorMatcherEngine):
     name = "tsinfer"
-    module = tsinfer_hmm
 
-    def make_matcher_indexes(self, ts, alleles):
+    def make_reference(self, ts, alleles):
         return tsinfer_hmm.MatcherIndexes(ts, vestigial_root=False, alleles=alleles)
+
+    def make_matcher(self):
+        return tsinfer_hmm.AncestorMatcher(
+            self.reference,
+            self.recombination,
+            self.mismatch,
+            likelihood_threshold=self.likelihood_threshold,
+            weight_by_n=self.weight_by_n,
+        )
 
 
 class TskitEngine:
@@ -243,12 +249,21 @@ class TslsEngine(AncestorMatcherEngine):
     """
 
     name = "tsls"
-    module = tsls
 
-    def make_matcher_indexes(self, ts, alleles):
+    def make_reference(self, ts, alleles):
         tables = ts.dump_tables()
         tables.edges.keep_rows(tables.edges.parent != 0)
-        return tsls.MatcherIndexes(tables.tree_sequence(), alleles=alleles)
+        return tsls.TreeSequence(tables.tree_sequence())
+
+    def make_matcher(self):
+        return tsls.Hmm(
+            self.reference,
+            self.recombination,
+            self.mismatch,
+            alleles=self.alleles,
+            likelihood_threshold=self.likelihood_threshold,
+            weight_by_n=self.weight_by_n,
+        )
 
 
 ENGINES = {engine.name: engine for engine in [TsinferEngine, TskitEngine, TslsEngine]}
