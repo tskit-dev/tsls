@@ -253,14 +253,13 @@ class TslsEngine(AncestorMatcherEngine):
     def make_reference(self, ts, alleles):
         tables = ts.dump_tables()
         tables.edges.keep_rows(tables.edges.parent != 0)
-        return tsls.TreeSequence(tables.tree_sequence())
+        return tsls.TreeSequence(tables.tree_sequence(), alleles=alleles)
 
     def make_matcher(self):
         return tsls.Hmm(
             self.reference,
             self.recombination,
             self.mismatch,
-            alleles=self.alleles,
             likelihood_threshold=self.likelihood_threshold,
             weight_by_n=self.weight_by_n,
         )

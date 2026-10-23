@@ -92,20 +92,54 @@ typedef struct {
     tsi_blkalloc_t allocator;
 } compressed_matrix_t;
 
-/* The Li and Stephens HMM on a tree sequence. The tree sequence is borrowed,
- * and must not be changed or freed while the HMM is in use. */
+/* An edge in one of tskit's edge orders, with the one coordinate that
+ * finding the first tree needs: right in insertion order (in which the
+ * edges before a position all have left <= it), and left in removal
+ * order. */
+typedef struct {
+    tsk_id_t parent;
+    tsk_id_t child;
+    double coordinate;
+} tsls_edge_t;
+
+/* Read-only data derived from a tree sequence for the HMM, which is built
+ * once and can be shared between HMMs (including in different threads).
+ * The tree sequence is borrowed, and must not be changed or freed while the
+ * index is in use. */
+typedef struct {
+    const tsk_treeseq_t *tree_sequence;
+    size_t num_nodes;
+    size_t num_sites;
+    size_t num_edges;
+    const double *sites_position;
+    double sequence_length;
+    /* The integer encoding of the alleles: the number of alleles and the
+     * ancestral state of each site */
+    tsk_size_t *num_alleles;
+    allele_t *ancestral_state;
+    /* The mutations at site j, in tskit order, are entries
+     * site_mutations_offset[j] to site_mutations_offset[j + 1] of the
+     * mutation_node and mutation_derived_state arrays */
+    tsk_size_t *site_mutations_offset;
+    tsk_id_t *mutation_node;
+    allele_t *mutation_derived_state;
+    /* Entry j is edge edge_insertion_order[j] (edge_removal_order[j]) of
+     * the edge table, so that the ranges of a tsk_tree_position_t index
+     * these arrays directly */
+    tsls_edge_t *insertion_edges;
+    tsls_edge_t *removal_edges;
+} tsls_index_t;
+
+/* The Li and Stephens HMM on a tree sequence. The index is borrowed, and
+ * must not be changed or freed while the HMM is in use. */
 typedef struct {
     int flags;
+    const tsls_index_t *index;
     const tsk_treeseq_t *tree_sequence;
     size_t num_nodes;
     size_t num_sites;
     const double *sites_position;
     double sequence_length;
-    /* The integer encoding of the alleles: the number of alleles and the
-     * ancestral state of each site, and the derived state of each mutation */
-    tsk_size_t *num_alleles;
-    allele_t *ancestral_state;
-    allele_t *derived_state;
     /* Input LS model rates */
     double likelihood_threshold;
     int pruning_mode;
@@ -154,9 +188,13 @@ int compressed_matrix_alloc(
 int compressed_matrix_free(compressed_matrix_t *self);
 size_t compressed_matrix_get_total_values(const compressed_matrix_t *self);
 
-int tsls_hmm_alloc(tsls_hmm_t *self, const tsk_treeseq_t *tree_sequence,
-    const char **alleles, tsk_size_t num_alleles, const double *recombination_rate,
-    const double *mismatch_rate, double likelihood_threshold, int flags);
+int tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
+    const char **alleles, tsk_size_t num_alleles);
+int tsls_index_free(tsls_index_t *self);
+
+int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
+    const double *recombination_rate, const double *mismatch_rate,
+    double likelihood_threshold, int flags);
 int tsls_hmm_set_pruning(tsls_hmm_t *self, int mode, double parameter);
 int tsls_hmm_free(tsls_hmm_t *self);
 int tsls_hmm_find_path(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,

@@ -248,6 +248,167 @@ out:
 }
 
 /*===================================================================
+ * Index
+ *===================================================================
+ */
+
+/* Returns the index of the specified state in the list of alleles, or -1
+ * if it is not in the list. */
+static int
+find_allele(const char *state, tsk_size_t length, const char **alleles,
+    const tsk_size_t *allele_length, tsk_size_t num_alleles)
+{
+    tsk_size_t j;
+
+    for (j = 0; j < num_alleles; j++) {
+        if (allele_length[j] == length && memcmp(alleles[j], state, length) == 0) {
+            return (int) j;
+        }
+    }
+    return -1;
+}
+
+/* Returns the code for the specified state. If the state is not in the list
+ * of alleles and add is true, it is appended to the list. */
+static int
+encode_allele(const char *state, tsk_size_t length, const char **alleles,
+    tsk_size_t *allele_length, tsk_size_t *num_alleles, bool add)
+{
+    int ret = find_allele(state, length, alleles, allele_length, *num_alleles);
+
+    if (ret < 0) {
+        if (!add) {
+            ret = TSLS_ERR_UNKNOWN_ALLELE;
+        } else if (*num_alleles == TSLS_MAX_ALLELES) {
+            ret = TSLS_ERR_TOO_MANY_ALLELES;
+        } else {
+            alleles[*num_alleles] = state;
+            allele_length[*num_alleles] = length;
+            ret = (int) *num_alleles;
+            (*num_alleles)++;
+        }
+    }
+    return ret;
+}
+
+/* Encode the ancestral and derived states of the tree sequence as integers.
+ * If alleles is NULL, the alleles are numbered at each site as in tskit's
+ * genotype decoding: the ancestral state is 0, and the derived states are
+ * numbered in order of their first appearance at the site, with at least
+ * two alleles at each site. Otherwise, each
+ * state is its index in the specified list of alleles. */
+static int WARN_UNUSED
+tsls_index_encode_alleles(
+    tsls_index_t *self, const char **alleles, tsk_size_t num_global_alleles)
+{
+    int ret = 0;
+    const tsk_treeseq_t *ts = self->tree_sequence;
+    const tsk_site_table_t *sites = &ts->tables->sites;
+    const bool global = alleles != NULL;
+    const char *site_alleles[TSLS_MAX_ALLELES];
+    tsk_size_t allele_length[TSLS_MAX_ALLELES];
+    const char **list = global ? alleles : site_alleles;
+    const tsk_mutation_t *mutation;
+    tsk_size_t j, k, n, offset;
+    tsk_size_t mutation_offset = 0;
+    int code;
+
+    if (global) {
+        if (num_global_alleles > TSLS_MAX_ALLELES) {
+            ret = TSLS_ERR_TOO_MANY_ALLELES;
+            goto out;
+        }
+        for (j = 0; j < num_global_alleles; j++) {
+            allele_length[j] = (tsk_size_t) strlen(alleles[j]);
+        }
+    }
+    for (j = 0; j < self->num_sites; j++) {
+        /* Mutations are sorted by site, so the mutations of each site are
+         * contiguous in the mutation table */
+        self->site_mutations_offset[j] = mutation_offset;
+        mutation_offset += ts->site_mutations_length[j];
+        n = global ? num_global_alleles : 0;
+        offset = sites->ancestral_state_offset[j];
+        code = encode_allele(sites->ancestral_state + offset,
+            sites->ancestral_state_offset[j + 1] - offset, list, allele_length, &n,
+            !global);
+        if (code < 0) {
+            ret = code;
+            goto out;
+        }
+        self->ancestral_state[j] = (allele_t) code;
+        for (k = 0; k < ts->site_mutations_length[j]; k++) {
+            mutation = &ts->site_mutations[j][k];
+            code = encode_allele(mutation->derived_state,
+                mutation->derived_state_length, list, allele_length, &n, !global);
+            if (code < 0) {
+                ret = code;
+                goto out;
+            }
+            assert(mutation->id == (tsk_id_t) (self->site_mutations_offset[j] + k));
+            self->mutation_node[mutation->id] = mutation->node;
+            self->mutation_derived_state[mutation->id] = (allele_t) code;
+        }
+        /* A site always has at least two alleles, so that a haplotype can
+         * differ from a site with no mutations (such as a tsinfer
+         * ancestor's focal sites, which are not yet in the tree sequence). */
+        self->num_alleles[j] = TSK_MAX(n, 2);
+    }
+    self->site_mutations_offset[self->num_sites] = mutation_offset;
+out:
+    return ret;
+}
+
+int
+tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
+    const char **alleles, tsk_size_t num_alleles)
+{
+    int ret = 0;
+    const size_t num_mutations = tsk_treeseq_get_num_mutations(tree_sequence);
+
+    memset(self, 0, sizeof(*self));
+    self->tree_sequence = tree_sequence;
+    self->num_nodes = tsk_treeseq_get_num_nodes(tree_sequence);
+    self->num_sites = tsk_treeseq_get_num_sites(tree_sequence);
+    self->num_edges = tsk_treeseq_get_num_edges(tree_sequence);
+    self->sites_position = tree_sequence->tables->sites.position;
+    self->sequence_length = tsk_treeseq_get_sequence_length(tree_sequence);
+    self->num_alleles = malloc((self->num_sites + 1) * sizeof(*self->num_alleles));
+    self->ancestral_state
+        = malloc((self->num_sites + 1) * sizeof(*self->ancestral_state));
+    self->site_mutations_offset
+        = malloc((self->num_sites + 1) * sizeof(*self->site_mutations_offset));
+    self->mutation_node = malloc((num_mutations + 1) * sizeof(*self->mutation_node));
+    self->mutation_derived_state
+        = malloc((num_mutations + 1) * sizeof(*self->mutation_derived_state));
+    if (self->num_alleles == NULL || self->ancestral_state == NULL
+        || self->site_mutations_offset == NULL || self->mutation_node == NULL
+        || self->mutation_derived_state == NULL) {
+        ret = TSLS_ERR_NO_MEMORY;
+        goto out;
+    }
+    ret = tsls_index_encode_alleles(self, alleles, num_alleles);
+    if (ret != 0) {
+        goto out;
+    }
+out:
+    return ret;
+}
+
+int
+tsls_index_free(tsls_index_t *self)
+{
+    tsi_safe_free(self->num_alleles);
+    tsi_safe_free(self->ancestral_state);
+    tsi_safe_free(self->site_mutations_offset);
+    tsi_safe_free(self->mutation_node);
+    tsi_safe_free(self->mutation_derived_state);
+    tsi_safe_free(self->insertion_edges);
+    tsi_safe_free(self->removal_edges);
+    return 0;
+}
+
+/*===================================================================
  * HMM
  *===================================================================
  */
@@ -301,7 +462,7 @@ tsls_hmm_print_state(tsls_hmm_t *self, FILE *out)
     for (j = 0; j < (int) self->num_sites; j++) {
         fprintf(out, "%d\t%f\t%f\t%f\t%d\t%d\n", j, self->sites_position[j],
             self->recombination_rate[j], self->mismatch_rate[j],
-            (int) self->num_alleles[j], (int) self->ancestral_state[j]);
+            (int) self->index->num_alleles[j], (int) self->index->ancestral_state[j]);
     }
     fprintf(out, "tree = \n");
     fprintf(out, "id\tparent\tlchild\trchild\tlsib\trsib\tlikelihood\n");
@@ -329,126 +490,23 @@ tsls_hmm_print_state(tsls_hmm_t *self, FILE *out)
     return 0;
 }
 
-/* Returns the index of the specified state in the list of alleles, or -1
- * if it is not in the list. */
-static int
-find_allele(const char *state, tsk_size_t length, const char **alleles,
-    const tsk_size_t *allele_length, tsk_size_t num_alleles)
-{
-    tsk_size_t j;
-
-    for (j = 0; j < num_alleles; j++) {
-        if (allele_length[j] == length && memcmp(alleles[j], state, length) == 0) {
-            return (int) j;
-        }
-    }
-    return -1;
-}
-
-/* Returns the code for the specified state. If the state is not in the list
- * of alleles and add is true, it is appended to the list. */
-static int
-encode_allele(const char *state, tsk_size_t length, const char **alleles,
-    tsk_size_t *allele_length, tsk_size_t *num_alleles, bool add)
-{
-    int ret = find_allele(state, length, alleles, allele_length, *num_alleles);
-
-    if (ret < 0) {
-        if (!add) {
-            ret = TSLS_ERR_UNKNOWN_ALLELE;
-        } else if (*num_alleles == TSLS_MAX_ALLELES) {
-            ret = TSLS_ERR_TOO_MANY_ALLELES;
-        } else {
-            alleles[*num_alleles] = state;
-            allele_length[*num_alleles] = length;
-            ret = (int) *num_alleles;
-            (*num_alleles)++;
-        }
-    }
-    return ret;
-}
-
-/* Encode the ancestral and derived states of the tree sequence as integers.
- * If alleles is NULL, the alleles are numbered at each site as in tskit's
- * genotype decoding: the ancestral state is 0, and the derived states are
- * numbered in order of their first appearance at the site, with at least
- * two alleles at each site. Otherwise, each
- * state is its index in the specified list of alleles. */
-static int WARN_UNUSED
-tsls_hmm_encode_alleles(
-    tsls_hmm_t *self, const char **alleles, tsk_size_t num_global_alleles)
-{
-    int ret = 0;
-    const tsk_treeseq_t *ts = self->tree_sequence;
-    const tsk_site_table_t *sites = &ts->tables->sites;
-    const bool global = alleles != NULL;
-    const char *site_alleles[TSLS_MAX_ALLELES];
-    tsk_size_t allele_length[TSLS_MAX_ALLELES];
-    const char **list = global ? alleles : site_alleles;
-    const tsk_mutation_t *mutation;
-    tsk_size_t j, k, n, offset;
-    int code;
-
-    if (global) {
-        if (num_global_alleles > TSLS_MAX_ALLELES) {
-            ret = TSLS_ERR_TOO_MANY_ALLELES;
-            goto out;
-        }
-        for (j = 0; j < num_global_alleles; j++) {
-            allele_length[j] = (tsk_size_t) strlen(alleles[j]);
-        }
-    }
-    for (j = 0; j < self->num_sites; j++) {
-        n = global ? num_global_alleles : 0;
-        offset = sites->ancestral_state_offset[j];
-        code = encode_allele(sites->ancestral_state + offset,
-            sites->ancestral_state_offset[j + 1] - offset, list, allele_length, &n,
-            !global);
-        if (code < 0) {
-            ret = code;
-            goto out;
-        }
-        self->ancestral_state[j] = (allele_t) code;
-        for (k = 0; k < ts->site_mutations_length[j]; k++) {
-            mutation = &ts->site_mutations[j][k];
-            code = encode_allele(mutation->derived_state,
-                mutation->derived_state_length, list, allele_length, &n, !global);
-            if (code < 0) {
-                ret = code;
-                goto out;
-            }
-            self->derived_state[mutation->id] = (allele_t) code;
-        }
-        /* A site always has at least two alleles, so that a haplotype can
-         * differ from a site with no mutations (such as a tsinfer
-         * ancestor's focal sites, which are not yet in the tree sequence). */
-        self->num_alleles[j] = TSK_MAX(n, 2);
-    }
-out:
-    return ret;
-}
-
 int
-tsls_hmm_alloc(tsls_hmm_t *self, const tsk_treeseq_t *tree_sequence,
-    const char **alleles, tsk_size_t num_alleles, const double *recombination_rate,
-    const double *mismatch_rate, double likelihood_threshold, int flags)
+tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
+    const double *recombination_rate, const double *mismatch_rate,
+    double likelihood_threshold, int flags)
 {
     int ret = 0;
-    const size_t N = tsk_treeseq_get_num_nodes(tree_sequence);
-    const size_t num_mutations = tsk_treeseq_get_num_mutations(tree_sequence);
+    const size_t N = index->num_nodes;
 
     memset(self, 0, sizeof(tsls_hmm_t));
     self->flags = flags;
     self->likelihood_threshold = likelihood_threshold;
-    self->tree_sequence = tree_sequence;
-    self->num_sites = tsk_treeseq_get_num_sites(tree_sequence);
+    self->index = index;
+    self->tree_sequence = index->tree_sequence;
+    self->num_sites = index->num_sites;
     self->num_nodes = N;
-    self->sites_position = tree_sequence->tables->sites.position;
-    self->sequence_length = tsk_treeseq_get_sequence_length(tree_sequence);
-    self->num_alleles = malloc((self->num_sites + 1) * sizeof(*self->num_alleles));
-    self->ancestral_state
-        = malloc((self->num_sites + 1) * sizeof(*self->ancestral_state));
-    self->derived_state = malloc((num_mutations + 1) * sizeof(*self->derived_state));
+    self->sites_position = index->sites_position;
+    self->sequence_length = index->sequence_length;
     self->recombination_rate
         = malloc((self->num_sites + 1) * sizeof(*self->recombination_rate));
     self->mismatch_rate = malloc((self->num_sites + 1) * sizeof(*self->mismatch_rate));
@@ -473,8 +531,7 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsk_treeseq_t *tree_sequence,
     self->likelihood_nodes_tmp = malloc((N + 1) * sizeof(*self->likelihood_nodes_tmp));
     self->values_tmp = malloc((N + 1) * sizeof(*self->values_tmp));
 
-    if (self->num_alleles == NULL || self->ancestral_state == NULL
-        || self->derived_state == NULL || self->recombination_rate == NULL
+    if (self->recombination_rate == NULL
         || self->mismatch_rate == NULL || self->traceback == NULL
         || self->max_likelihood_node == NULL || self->parent == NULL
         || self->left_child == NULL || self->right_child == NULL
@@ -485,10 +542,6 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsk_treeseq_t *tree_sequence,
         || self->likelihood_nodes == NULL || self->likelihood_nodes_tmp == NULL
         || self->values_tmp == NULL || self->allelic_state == NULL) {
         ret = TSLS_ERR_NO_MEMORY;
-        goto out;
-    }
-    ret = tsls_hmm_encode_alleles(self, alleles, num_alleles);
-    if (ret != 0) {
         goto out;
     }
     /* Alloc in blocks of at least 64MiB, and large enough to hold the
@@ -516,9 +569,6 @@ out:
 int
 tsls_hmm_free(tsls_hmm_t *self)
 {
-    tsi_safe_free(self->num_alleles);
-    tsi_safe_free(self->ancestral_state);
-    tsi_safe_free(self->derived_state);
     tsi_safe_free(self->recombination_rate);
     tsi_safe_free(self->mismatch_rate);
     tsi_safe_free(self->parent);
@@ -893,12 +943,14 @@ out:
 static inline void
 tsls_hmm_set_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 {
-    const tsk_mutation_t *restrict mutations = self->tree_sequence->site_mutations[site];
-    const tsk_size_t num_mutations = self->tree_sequence->site_mutations_length[site];
+    const tsls_index_t *index = self->index;
+    const tsk_id_t *restrict node = index->mutation_node;
+    const allele_t *restrict derived_state = index->mutation_derived_state;
+    const tsk_size_t stop = index->site_mutations_offset[site + 1];
     tsk_size_t j;
 
-    for (j = 0; j < num_mutations; j++) {
-        self->allelic_state[mutations[j].node] = self->derived_state[mutations[j].id];
+    for (j = index->site_mutations_offset[site]; j < stop; j++) {
+        self->allelic_state[node[j]] = derived_state[j];
     }
 }
 
@@ -907,13 +959,14 @@ tsls_hmm_set_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 static inline void
 tsls_hmm_unset_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 {
-    const tsk_mutation_t *restrict mutations = self->tree_sequence->site_mutations[site];
-    const tsk_size_t num_mutations = self->tree_sequence->site_mutations_length[site];
+    const tsls_index_t *index = self->index;
+    const tsk_id_t *restrict node = index->mutation_node;
+    const tsk_size_t stop = index->site_mutations_offset[site + 1];
     tsk_size_t j;
     tsk_id_t u;
 
-    for (j = 0; j < num_mutations; j++) {
-        u = mutations[j].node;
+    for (j = index->site_mutations_offset[site]; j < stop; j++) {
+        u = node[j];
         self->allelic_state[u] = self->parent[u] == NULL_NODE ? ROOT_ALLELE : TSK_NULL;
     }
 }
@@ -923,12 +976,13 @@ tsls_hmm_unset_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 static inline void
 tsls_hmm_clear_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 {
-    const tsk_mutation_t *restrict mutations = self->tree_sequence->site_mutations[site];
-    const tsk_size_t num_mutations = self->tree_sequence->site_mutations_length[site];
+    const tsls_index_t *index = self->index;
+    const tsk_id_t *restrict node = index->mutation_node;
+    const tsk_size_t stop = index->site_mutations_offset[site + 1];
     tsk_size_t j;
 
-    for (j = 0; j < num_mutations; j++) {
-        self->allelic_state[mutations[j].node] = TSK_NULL;
+    for (j = index->site_mutations_offset[site]; j < stop; j++) {
+        self->allelic_state[node[j]] = TSK_NULL;
     }
 }
 
@@ -939,13 +993,13 @@ tsls_hmm_insert_mutation_likelihoods(tsls_hmm_t *self, const tsk_id_t site)
 {
     const double *restrict L = self->likelihood;
     const tsk_id_t *restrict parent = self->parent;
-    const tsk_mutation_t *restrict mutations = self->tree_sequence->site_mutations[site];
-    const tsk_size_t num_mutations = self->tree_sequence->site_mutations_length[site];
+    const tsls_index_t *index = self->index;
+    const tsk_size_t stop = index->site_mutations_offset[site + 1];
     tsk_size_t j;
     tsk_id_t u, node;
 
-    for (j = 0; j < num_mutations; j++) {
-        node = mutations[j].node;
+    for (j = index->site_mutations_offset[site]; j < stop; j++) {
+        node = index->mutation_node[j];
         if (L[node] == NULL_LIKELIHOOD) {
             u = node;
             while (L[u] == NULL_LIKELIHOOD) {
@@ -1059,7 +1113,7 @@ emission_probability(allele_t node_state, allele_t state, double mu, double num_
 static inline int
 check_haplotype_state(const tsls_hmm_t *self, tsk_id_t site, allele_t state)
 {
-    const tsk_size_t num_alleles = self->num_alleles[site];
+    const tsk_size_t num_alleles = self->index->num_alleles[site];
 
     if (state < TSLS_MISSING_DATA || (state >= 0 && (tsk_size_t) state >= num_alleles)) {
         return TSLS_ERR_BAD_HAPLOTYPE_ALLELE;
@@ -1200,8 +1254,8 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     const double rho = self->recombination_rate[site];
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
-    const double num_alleles = (double) self->num_alleles[site];
-    const allele_t ancestral_state = self->ancestral_state[site];
+    const double num_alleles = (double) self->index->num_alleles[site];
+    const allele_t ancestral_state = self->index->ancestral_state[site];
     double max_L, p_no_recomb, p_recomb, p_t, p_e;
     tsk_id_t u, max_L_node;
     int j;
@@ -1286,8 +1340,8 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
     const double rho = self->recombination_rate[site];
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
-    const double num_alleles = (double) self->num_alleles[site];
-    const allele_t ancestral_state = self->ancestral_state[site];
+    const double num_alleles = (double) self->index->num_alleles[site];
+    const allele_t ancestral_state = self->index->ancestral_state[site];
     double total, normalisation_factor, p_e;
     tsk_id_t u;
     int j;
@@ -1351,8 +1405,8 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
     double *restrict L = self->likelihood;
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
-    const double num_alleles = (double) self->num_alleles[site];
-    const allele_t ancestral_state = self->ancestral_state[site];
+    const double num_alleles = (double) self->index->num_alleles[site];
+    const allele_t ancestral_state = self->index->ancestral_state[site];
     double x;
     tsk_id_t u;
     int j;
@@ -1553,7 +1607,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
                 parent[edge_child[e]] = edge_parent[e];
             }
         }
-        allelic_state[virtual_root] = self->ancestral_state[site];
+        allelic_state[virtual_root] = self->index->ancestral_state[site];
         tsls_hmm_set_allelic_state(self, site);
         u = path_parent[path_length];
         while (allelic_state[u] == TSK_NULL) {

@@ -61,7 +61,7 @@ def sc2ts_queries():
 def capture(name, ts, query_list, mu, rho, weight_by_n, rows):
     ts_path = RESULTS / f"{name}.trees"
     ts.dump(ts_path)
-    mi = tsls.TreeSequence(ts)
+    mi = tsls.TreeSequence(ts, alleles=v.ALLELES)
     for query_id, label, h in query_list:
         am = v.make_matcher(
             ts, mu, rho, weight_by_n=weight_by_n, count_distinct=True, tree_sequence=mi

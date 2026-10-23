@@ -31,6 +31,13 @@ DEFAULT_WORKLOADS = [
     ("samples", 6),
 ]
 
+# A smaller set for checking changes, which takes about two minutes
+QUICK_WORKLOADS = [
+    ("ancestors_g84", 50),
+    ("ancestors_g1485", 30),
+    ("samples", 2),
+]
+
 
 def time_workload(workload_dir, num_queries, repeats):
     """
@@ -70,11 +77,12 @@ def time_workload(workload_dir, num_queries, repeats):
 )
 @click.option("-w", "--workload", "workload_names", multiple=True)
 @click.option("-r", "--repeats", type=int, default=3)
-def main(data_dir, workload_names, repeats):
+@click.option("--quick", is_flag=True, help="Use the smaller set of workloads")
+def main(data_dir, workload_names, repeats, quick):
     """
     Print a markdown table of paired wall times for each workload.
     """
-    workloads = DEFAULT_WORKLOADS
+    workloads = QUICK_WORKLOADS if quick else DEFAULT_WORKLOADS
     if len(workload_names) > 0:
         workloads = [w for w in DEFAULT_WORKLOADS if w[0] in workload_names]
     click.echo(

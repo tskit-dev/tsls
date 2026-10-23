@@ -206,7 +206,7 @@ def run_threading_task(num_samples, seed, quick):
     ts, h, true_parent, near = threading_case(num_samples, seed)
     m = ts.num_sites
     mu, rho = v.hmm_params(v.THREADING_DEFAULTS["k"])
-    mi = tsls.TreeSequence(ts)
+    mi = tsls.TreeSequence(ts, alleles=v.ALLELES)
     true_switch = np.where(true_parent[1:] != true_parent[:-1])[0] + 1
     rows = []
     exact_posterior = None
@@ -291,7 +291,7 @@ def run_calibration_task(setting, seed, quick):
     m = ts.num_sites
     n = ts.num_nodes
     rho = switches / m
-    mi = tsls.TreeSequence(ts)
+    mi = tsls.TreeSequence(ts, alleles=v.ALLELES)
     queries = []
     for _ in range(3 if quick else 5):
         path = v.sample_prior_path(present, continuous, np.full(m, rho), n, rng)
@@ -363,7 +363,7 @@ def load_sc2ts(size):
     tables = ts.dump_tables()
     tables.edges.keep_rows(tables.edges.parent != 0)
     ts = tables.tree_sequence()
-    mi = tsls.TreeSequence(ts)
+    mi = tsls.TreeSequence(ts, alleles=v.ALLELES)
     query_dir = SC2TS_DATA / "queries_scaling"
     H = np.load(query_dir / "queries.npz")["H"]
     df = pd.read_csv(query_dir / "queries.csv")

@@ -24,6 +24,7 @@ static PyObject *TslsMatchImpossible;
 typedef struct {
     PyObject_HEAD
     tsk_treeseq_t *tree_sequence;
+    tsls_index_t *index;
 } TreeSequence;
 
 typedef struct {
@@ -52,13 +53,14 @@ handle_library_error(int err)
  */
 
 /* A minimal tree sequence type, built from a LightweightTableCollection,
- * which can be shared between HMMs (including in different threads). */
+ * with the index the HMM needs (for the specified alleles), which can be
+ * shared between HMMs (including in different threads). */
 
 static int
 TreeSequence_check_state(TreeSequence *self)
 {
     int ret = 0;
-    if (self->tree_sequence == NULL) {
+    if (self->tree_sequence == NULL || self->index == NULL) {
         PyErr_SetString(PyExc_SystemError, "TreeSequence not initialised");
         ret = -1;
     }
@@ -68,6 +70,11 @@ TreeSequence_check_state(TreeSequence *self)
 static void
 TreeSequence_dealloc(TreeSequence *self)
 {
+    if (self->index != NULL) {
+        tsls_index_free(self->index);
+        PyMem_Free(self->index);
+        self->index = NULL;
+    }
     if (self->tree_sequence != NULL) {
         tsk_treeseq_free(self->tree_sequence);
         PyMem_Free(self->tree_sequence);
@@ -82,12 +89,38 @@ TreeSequence_init(TreeSequence *self, PyObject *args, PyObject *kwds)
     int ret = -1;
     int err;
     LightweightTableCollection *tables = NULL;
-    static char *kwlist[] = { "tables", NULL };
+    PyObject *alleles = Py_None;
+    PyObject *alleles_seq = NULL;
+    const char **alleles_data = NULL;
+    tsk_size_t num_alleles = 0;
+    Py_ssize_t j;
+    static char *kwlist[] = { "tables", "alleles", NULL };
 
     self->tree_sequence = NULL;
-    if (!PyArg_ParseTupleAndKeywords(
-            args, kwds, "O!", kwlist, &LightweightTableCollectionType, &tables)) {
+    self->index = NULL;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!|O", kwlist,
+            &LightweightTableCollectionType, &tables, &alleles)) {
         goto out;
+    }
+    if (alleles != Py_None) {
+        alleles_seq = PySequence_Fast(alleles, "alleles must be a sequence");
+        if (alleles_seq == NULL) {
+            goto out;
+        }
+        num_alleles = (tsk_size_t) PySequence_Fast_GET_SIZE(alleles_seq);
+        alleles_data = PyMem_Calloc(num_alleles + 1, sizeof(*alleles_data));
+        if (alleles_data == NULL) {
+            PyErr_NoMemory();
+            goto out;
+        }
+        for (j = 0; j < (Py_ssize_t) num_alleles; j++) {
+            /* The UTF-8 buffer lives as long as the string */
+            alleles_data[j]
+                = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(alleles_seq, j));
+            if (alleles_data[j] == NULL) {
+                goto out;
+            }
+        }
     }
     if (LightweightTableCollection_check_state(tables) != 0) {
         goto out;
@@ -103,8 +136,20 @@ TreeSequence_init(TreeSequence *self, PyObject *args, PyObject *kwds)
         handle_tskit_error(err);
         goto out;
     }
+    self->index = PyMem_Calloc(1, sizeof(*self->index));
+    if (self->index == NULL) {
+        PyErr_NoMemory();
+        goto out;
+    }
+    err = tsls_index_init(self->index, self->tree_sequence, alleles_data, num_alleles);
+    if (err != 0) {
+        handle_library_error(err);
+        goto out;
+    }
     ret = 0;
 out:
+    PyMem_Free(alleles_data);
+    Py_XDECREF(alleles_seq);
     return ret;
 }
 
@@ -187,27 +232,22 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     double pruning_parameter = 0;
     int count_distinct = 0;
     static char *kwlist[] = { "tree_sequence", "recombination", "mismatch",
-        "alleles", "extended_checks", "likelihood_threshold", "weight_by_n",
-        "pruning_mode", "pruning_parameter", "count_distinct", NULL };
+        "extended_checks", "likelihood_threshold", "weight_by_n", "pruning_mode",
+        "pruning_parameter", "count_distinct", NULL };
     TreeSequence *tree_sequence = NULL;
     PyObject *recombination = NULL;
     PyObject *mismatch = NULL;
-    PyObject *alleles = Py_None;
-    PyObject *alleles_seq = NULL;
-    const char **alleles_data = NULL;
-    tsk_size_t num_alleles = 0;
     PyArrayObject *recombination_array = NULL;
     PyArrayObject *mismatch_array = NULL;
     npy_intp *shape;
     double likelihood_threshold = DBL_MIN;
     int flags = 0;
-    Py_ssize_t j;
     size_t num_sites;
 
     self->hmm = NULL;
     self->tree_sequence = NULL;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|Oidiidi", kwlist,
-            &TreeSequenceType, &tree_sequence, &recombination, &mismatch, &alleles,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|idiidi", kwlist,
+            &TreeSequenceType, &tree_sequence, &recombination, &mismatch,
             &extended_checks, &likelihood_threshold, &weight_by_n, &pruning_mode,
             &pruning_parameter, &count_distinct)) {
         goto out;
@@ -218,27 +258,6 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
         goto out;
     }
     num_sites = tsk_treeseq_get_num_sites(tree_sequence->tree_sequence);
-
-    if (alleles != Py_None) {
-        alleles_seq = PySequence_Fast(alleles, "alleles must be a sequence");
-        if (alleles_seq == NULL) {
-            goto out;
-        }
-        num_alleles = (tsk_size_t) PySequence_Fast_GET_SIZE(alleles_seq);
-        alleles_data = PyMem_Calloc(num_alleles + 1, sizeof(*alleles_data));
-        if (alleles_data == NULL) {
-            PyErr_NoMemory();
-            goto out;
-        }
-        for (j = 0; j < (Py_ssize_t) num_alleles; j++) {
-            /* The UTF-8 buffer lives as long as the string */
-            alleles_data[j]
-                = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(alleles_seq, j));
-            if (alleles_data[j] == NULL) {
-                goto out;
-            }
-        }
-    }
 
     recombination_array = (PyArrayObject *) PyArray_FromAny(recombination,
         PyArray_DescrFromType(NPY_FLOAT64), 1, 1, NPY_ARRAY_IN_ARRAY, NULL);
@@ -276,8 +295,8 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     if (count_distinct) {
         flags |= TSLS_COUNT_DISTINCT;
     }
-    err = tsls_hmm_alloc(self->hmm, self->tree_sequence->tree_sequence, alleles_data,
-        num_alleles, PyArray_DATA(recombination_array), PyArray_DATA(mismatch_array),
+    err = tsls_hmm_alloc(self->hmm, self->tree_sequence->index,
+        PyArray_DATA(recombination_array), PyArray_DATA(mismatch_array),
         likelihood_threshold, flags);
     if (err != 0) {
         handle_library_error(err);
@@ -290,8 +309,6 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     }
     ret = 0;
 out:
-    PyMem_Free(alleles_data);
-    Py_XDECREF(alleles_seq);
     Py_XDECREF(recombination_array);
     Py_XDECREF(mismatch_array);
     return ret;

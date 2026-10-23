@@ -77,7 +77,7 @@ test_allele_encoding(void)
 {
     int ret;
     tsk_treeseq_t ts;
-    tsls_hmm_t hmm;
+    tsls_index_t index;
     tsk_size_t j;
     tsk_mutation_t *mutation;
     const char *too_few[] = { "A", "C" };
@@ -87,43 +87,48 @@ test_allele_encoding(void)
 
     build_forest_ts(&ts, true);
 
-    ret = tsls_hmm_alloc(&hmm, &ts, acgt, 4, rho, mu, DBL_MIN, 0);
+    ret = tsls_index_init(&index, &ts, acgt, 4);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     for (j = 0; j < tsk_treeseq_get_num_sites(&ts); j++) {
-        CU_ASSERT_EQUAL(hmm.num_alleles[j], 4);
-        CU_ASSERT_EQUAL(hmm.ancestral_state[j],
+        CU_ASSERT_EQUAL(index.num_alleles[j], 4);
+        CU_ASSERT_EQUAL(index.ancestral_state[j],
             acgt_code(ts.tables->sites
                           .ancestral_state[ts.tables->sites.ancestral_state_offset[j]]));
     }
     for (j = 0; j < tsk_treeseq_get_num_mutations(&ts); j++) {
         mutation = &ts.site_mutations_mem[j];
-        CU_ASSERT_EQUAL(
-            hmm.derived_state[mutation->id], acgt_code(mutation->derived_state[0]));
+        CU_ASSERT_EQUAL(index.mutation_node[mutation->id], mutation->node);
+        CU_ASSERT_EQUAL(index.mutation_derived_state[mutation->id],
+            acgt_code(mutation->derived_state[0]));
     }
-    tsls_hmm_free(&hmm);
+    for (j = 0; j < tsk_treeseq_get_num_sites(&ts); j++) {
+        CU_ASSERT_EQUAL(index.site_mutations_offset[j + 1] - index.site_mutations_offset[j],
+            ts.site_mutations_length[j]);
+    }
+    tsls_index_free(&index);
 
     /* Per-site encoding, as in tskit */
-    ret = tsls_hmm_alloc(&hmm, &ts, NULL, 0, rho, mu, DBL_MIN, 0);
+    ret = tsls_index_init(&index, &ts, NULL, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     for (j = 0; j < tsk_treeseq_get_num_sites(&ts); j++) {
-        CU_ASSERT_EQUAL(hmm.num_alleles[j], site_num_alleles[j]);
-        CU_ASSERT_EQUAL(hmm.ancestral_state[j], 0);
+        CU_ASSERT_EQUAL(index.num_alleles[j], site_num_alleles[j]);
+        CU_ASSERT_EQUAL(index.ancestral_state[j], 0);
     }
     /* At the last site, the mutation to A is a back mutation */
     for (j = 0; j < ts.site_mutations_length[3]; j++) {
         mutation = &ts.site_mutations[3][j];
-        CU_ASSERT_EQUAL(
-            hmm.derived_state[mutation->id], mutation->derived_state[0] == 'A' ? 0 : 1);
+        CU_ASSERT_EQUAL(index.mutation_derived_state[mutation->id],
+            mutation->derived_state[0] == 'A' ? 0 : 1);
     }
-    tsls_hmm_free(&hmm);
+    tsls_index_free(&index);
 
-    ret = tsls_hmm_alloc(&hmm, &ts, too_few, 2, rho, mu, DBL_MIN, 0);
+    ret = tsls_index_init(&index, &ts, too_few, 2);
     CU_ASSERT_EQUAL(ret, TSLS_ERR_UNKNOWN_ALLELE);
-    tsls_hmm_free(&hmm);
+    tsls_index_free(&index);
 
-    ret = tsls_hmm_alloc(&hmm, &ts, acgt, TSLS_MAX_ALLELES + 1, rho, mu, DBL_MIN, 0);
+    ret = tsls_index_init(&index, &ts, acgt, TSLS_MAX_ALLELES + 1);
     CU_ASSERT_EQUAL(ret, TSLS_ERR_TOO_MANY_ALLELES);
-    tsls_hmm_free(&hmm);
+    tsls_index_free(&index);
 
     tsk_treeseq_free(&ts);
 }
@@ -133,6 +138,7 @@ test_forest_matching(void)
 {
     int ret;
     tsk_treeseq_t ts;
+    tsls_index_t index;
     tsls_hmm_t hmm;
     compressed_matrix_t fm, bm;
     /* The haplotype of node 1: C (under 3), C (ancestral), G, A (back mutation) */
@@ -144,7 +150,9 @@ test_forest_matching(void)
     double total;
 
     build_forest_ts(&ts, false);
-    ret = tsls_hmm_alloc(&hmm, &ts, acgt, 4, rho, mu, DBL_MIN, TSLS_EXTENDED_CHECKS);
+    ret = tsls_index_init(&index, &ts, acgt, 4);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = tsls_hmm_alloc(&hmm, &index, rho, mu, DBL_MIN, TSLS_EXTENDED_CHECKS);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     ret = tsls_hmm_find_path(&hmm, 0, 4, h, match, &path_length, left, right, parent);
@@ -214,6 +222,7 @@ test_forest_matching(void)
     compressed_matrix_free(&bm);
 
     tsls_hmm_free(&hmm);
+    tsls_index_free(&index);
     tsk_treeseq_free(&ts);
 }
 
@@ -222,6 +231,7 @@ test_bad_inputs(void)
 {
     int ret;
     tsk_treeseq_t ts;
+    tsls_index_t index;
     tsls_hmm_t hmm;
     compressed_matrix_t cm;
     double zero_mu[] = { 0, 0, 0, 0 };
@@ -235,7 +245,9 @@ test_bad_inputs(void)
     size_t path_length;
 
     build_forest_ts(&ts, false);
-    ret = tsls_hmm_alloc(&hmm, &ts, acgt, 4, rho, zero_mu, DBL_MIN, 0);
+    ret = tsls_index_init(&index, &ts, acgt, 4);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = tsls_hmm_alloc(&hmm, &index, rho, zero_mu, DBL_MIN, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     ret = tsls_hmm_find_path(
@@ -260,6 +272,7 @@ test_bad_inputs(void)
     compressed_matrix_free(&cm);
 
     tsls_hmm_free(&hmm);
+    tsls_index_free(&index);
     tsk_treeseq_free(&ts);
 }
 

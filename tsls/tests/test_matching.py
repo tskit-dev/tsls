@@ -545,11 +545,13 @@ class TestInterface:
 
     def test_shared_tree_sequence(self):
         ts = two_tree_ts()
-        tts = tsls.TreeSequence(ts)
+        tts = tsls.TreeSequence(ts, alleles=ALLELES)
         assert tts.num_nodes == ts.num_nodes
         assert tts.num_sites == ts.num_sites
         m = ts.num_sites
-        am1 = tsls.Hmm(tts, np.full(m, 0.01), np.full(m, 0.01), alleles=ALLELES)
+        with pytest.raises(ValueError, match="making the tsls.TreeSequence"):
+            tsls.Hmm(tts, np.full(m, 0.01), np.full(m, 0.01), alleles=ALLELES)
+        am1 = tsls.Hmm(tts, np.full(m, 0.01), np.full(m, 0.01))
         am2 = tsls.Hmm(ts, np.full(m, 0.01), np.full(m, 0.01), alleles=ALLELES)
         assert am1.tree_sequence is tts
         h = np.zeros(m, dtype=np.int8)
@@ -586,7 +588,7 @@ class TestInterface:
             tsls.Hmm(ts, np.zeros(1), np.zeros(ts.num_sites))
         with pytest.raises(ValueError, match="mismatch"):
             tsls.Hmm(ts, np.zeros(ts.num_sites), np.zeros(1))
-        am, _ = make_matcher(ts, 1e-2, 1e-2, True)
+        am, _ = make_matcher(single_tree_ts(), 1e-2, 1e-2, True)
         with pytest.raises(ValueError):
             am.forward_matrix(np.zeros(1, dtype=np.int8))
         h = np.zeros(ts.num_sites, dtype=np.int8)

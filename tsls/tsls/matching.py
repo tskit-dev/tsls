@@ -9,17 +9,29 @@ import _tsls
 
 class TreeSequence(_tsls.TreeSequence):
     """
-    A tskit tree sequence in the form used by the HMM. It can be shared
-    between HMMs, including HMMs in different threads, so that it is only
-    built once.
+    A tskit tree sequence in the form used by the HMM, with its alleles
+    encoded as integers. It can be shared between HMMs, including HMMs in
+    different threads, so that it is only built once.
+
+    By default the alleles are numbered at each site as tskit does: the
+    ancestral state is 0 and derived states are numbered from 1 in order of
+    their first appearance at the site. Every site has at least two alleles,
+    so that 1 can be matched at a site with no mutations (as in tsinfer, for
+    an ancestor's focal sites). If ``alleles`` is specified, every state is
+    instead its index in this list.
     """
 
-    def __init__(self, ts):
+    def __init__(self, ts, *, alleles=None):
         tables = ts.dump_tables()
         ll_tables = _tsls.LightweightTableCollection(tables.sequence_length)
         ll_tables.fromdict(tables.asdict())
+        if alleles is not None:
+            alleles = list(alleles)
+            if len(set(alleles)) != len(alleles):
+                raise ValueError("Alleles must be unique")
         self.ts = ts
-        super().__init__(ll_tables)
+        self.alleles = alleles
+        super().__init__(ll_tables, alleles=alleles)
 
 
 class CompressedMatrix:
@@ -139,18 +151,14 @@ class Hmm(_tsls.Hmm):
     Runs the Viterbi, forward and backward algorithms for haplotypes against
     the specified tree sequence (a tskit.TreeSequence, or a tsls.TreeSequence
     to share one between HMMs), using the specified per-site recombination
-    and mismatch probabilities.
+    and mismatch probabilities. ``alleles`` is passed to tsls.TreeSequence,
+    and can only be given with a tskit.TreeSequence.
 
     The states of the HMM at a given position are the nodes in the tree at
     that position: nodes with a parent or at least one child. Isolated
     nodes cannot be copied.
 
-    Haplotypes are integer encoded. By default the alleles are numbered at
-    each site as tskit does: the ancestral state is 0 and derived states are
-    numbered from 1 in order of their first appearance at the site. Every
-    site has at least two alleles, so that 1 can be matched at a site with
-    no mutations (as in tsinfer, for an ancestor's focal sites). If
-    ``alleles`` is specified, every state is instead its index in this list.
+    Haplotypes are integer encoded, as described in tsls.TreeSequence.
 
     After normalisation at each site, values below likelihood_threshold are
     set to it. The experimental ``pruning`` option also sets the values of
@@ -177,13 +185,10 @@ class Hmm(_tsls.Hmm):
         count_distinct=False,
     ):
         if not isinstance(ts, TreeSequence):
-            ts = TreeSequence(ts)
+            ts = TreeSequence(ts, alleles=alleles)
+        elif alleles is not None:
+            raise ValueError("Specify alleles when making the tsls.TreeSequence")
         kwargs = {"extended_checks": extended_checks, "count_distinct": count_distinct}
-        if alleles is not None:
-            alleles = list(alleles)
-            if len(set(alleles)) != len(alleles):
-                raise ValueError("Alleles must be unique")
-            kwargs["alleles"] = alleles
         if pruning is not None:
             mode, parameter = pruning
             if mode not in self.PRUNING_MODES:

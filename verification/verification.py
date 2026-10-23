@@ -150,12 +150,11 @@ def make_matcher(
 ):
     m = ts.num_sites
     if tree_sequence is None:
-        tree_sequence = tsls.TreeSequence(ts)
+        tree_sequence = tsls.TreeSequence(ts, alleles=ALLELES)
     return tsls.Hmm(
         tree_sequence,
         np.full(m, rho),
         np.full(m, mu),
-        alleles=ALLELES,
         weight_by_n=weight_by_n,
         likelihood_threshold=likelihood_threshold,
         pruning=pruning,
