@@ -654,21 +654,22 @@ tsls_hmm_add_likelihood(tsls_hmm_t *self, tsk_id_t u, double value)
     self->num_likelihood_nodes++;
 }
 
-/* Remove the specified node from the list of nodes with likelihoods. */
+/* Remove the nodes that have left the tree (whose likelihood is
+ * NOT_IN_TREE) from the list of nodes with likelihoods. */
 static void
-tsls_hmm_delete_likelihood(tsls_hmm_t *self, const tsk_id_t node)
+tsls_hmm_remove_left_nodes(tsls_hmm_t *self)
 {
     int j, k;
     tsk_id_t *restrict L_nodes = self->likelihood_nodes;
+    const double *restrict L = self->likelihood;
 
     k = 0;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         L_nodes[k] = L_nodes[j];
-        if (L_nodes[j] != node) {
+        if (L[L_nodes[j]] != NOT_IN_TREE) {
             k++;
         }
     }
-    assert(self->num_likelihood_nodes == k + 1);
     self->num_likelihood_nodes = k;
 }
 
@@ -806,7 +807,7 @@ tsls_hmm_update_tree(tsls_hmm_t *self, const tsk_tree_position_t *tp)
     tsk_id_t *restrict isolated = self->likelihood_nodes_tmp;
     double *restrict L = self->likelihood;
     tsk_id_t j, e, u;
-    int k, num_isolated = 0;
+    int k, num_left, num_isolated = 0;
 
     for (j = tp->out.start; j != tp->out.stop; j += direction) {
         e = tp->out.order[j];
@@ -821,13 +822,19 @@ tsls_hmm_update_tree(tsls_hmm_t *self, const tsk_tree_position_t *tp)
         tsls_hmm_insert_edge(self, edge_parent[e], edge_child[e], true);
     }
     /* Nodes that are still isolated have left the tree. Nodes that were
-     * isolated and then inserted again keep their likelihoods. */
+     * isolated and then inserted again keep their likelihoods. We mark the
+     * nodes that have left and then remove them from the likelihood list in
+     * one pass, rather than one pass for each node. */
+    num_left = 0;
     for (k = 0; k < num_isolated; k++) {
         u = isolated[k];
         if (!tsls_hmm_in_tree(self, u)) {
-            tsls_hmm_delete_likelihood(self, u);
             L[u] = NOT_IN_TREE;
+            num_left++;
         }
+    }
+    if (num_left > 0) {
+        tsls_hmm_remove_left_nodes(self);
     }
 }
 
