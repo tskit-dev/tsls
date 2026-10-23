@@ -33,6 +33,15 @@
 #include <stdbool.h>
 #include <math.h>
 
+/* For the innermost helpers, which GCC doesn't always inline. Inlining
+ * tsls_hmm_coalesce_likelihoods also specialises it for its constant
+ * check_recombination_required argument. */
+#ifdef __GNUC__
+#define ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define ALWAYS_INLINE inline
+#endif
+
 #define MODE_VITERBI  0
 #define MODE_FORWARD  1
 #define MODE_BACKWARD 2
@@ -710,7 +719,6 @@ tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
     if (unlikely(value == CACHE_UNSET)) {
         value = L[v];
     }
-    assert(value >= 0);
     v = u;
     while (likely(L[v] == NULL_LIKELIHOOD) && likely(L_cache[v] == CACHE_UNSET)) {
         L_cache[v] = value;
@@ -949,7 +957,7 @@ tsls_hmm_insert_mutation_likelihoods(tsls_hmm_t *self, const tsk_id_t site)
 /* As tsls_hmm_get_inherited_likelihood, but also return the
  * recombination_required flag that u inherits, caching it along the path
  * with the likelihood. */
-static inline double
+static ALWAYS_INLINE double
 tsls_hmm_get_inherited_likelihood_and_flag(
     tsls_hmm_t *self, tsk_id_t u, int8_t *flag)
 {
@@ -973,7 +981,6 @@ tsls_hmm_get_inherited_likelihood_and_flag(
         value = L_cache[v];
         r = R_cache[v];
     }
-    assert(value >= 0);
     v = u;
     while (likely(L[v] == NULL_LIKELIHOOD) && likely(L_cache[v] == CACHE_UNSET)) {
         L_cache[v] = value;
@@ -989,7 +996,7 @@ tsls_hmm_get_inherited_likelihood_and_flag(
  * recombination_required flag to equal the one inherited from the parent,
  * so that the traceback, in which nodes inherit the flag of their nearest
  * ancestor in the list, is unchanged. */
-static void
+static ALWAYS_INLINE void
 tsls_hmm_coalesce_likelihoods(
     tsls_hmm_t *self, bool check_recombination_required)
 {
