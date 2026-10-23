@@ -487,63 +487,105 @@ its traceback sizes are unchanged.
 
 ### Wall time after the refactor
 
-Fewer instructions did not mean less time. `paired.py` times each query
-three times with each engine, alternating, and keeps the best time for
-each (on an idle machine; the ratio is total tsls time over total
-tsinfer-hmm time, including building the matcher for each query, as
-`engines.py` does):
+Fewer instructions did not at first mean less time, so wall time was then
+optimised directly. `paired.py` matches each query three times with each
+engine, alternating between them, keeps the best time for each, and
+reports total tsls time over total tsinfer-hmm time for each workload
+(the per-query median ratio is also printed). The times include building
+the matcher for each query, as `engines.py` does. `paired.py --quick`
+runs a smaller set, but it is too noisy on this VM to compare builds (see
+below).
 
-| workload | queries | tsinfer-hmm (s) | tsls (s) | ratio |
-|---|---|---|---|---|
-| ancestors, group 84 | 50 | 0.21 | 0.30 | 1.43 |
-| ancestors, group 1000 | 50 | 0.46 | 0.55 | 1.19 |
-| ancestors, group 1483 | 100 | 4.76 | 5.67 | 1.19 |
-| ancestors, group 1484 | 50 | 5.23 | 6.42 | 1.23 |
-| ancestors, group 1485 | 100 | 12.98 | 16.20 | 1.25 |
-| samples | 6 | 17.69 | 20.22 | 1.14 |
+```
+uv run python paired.py
+```
 
-Two things account for this:
+#### Current result
 
-- Building a `tsls.Hmm` takes 4-8 ms against 1.5 ms for tsinfer-hmm's
-  `AncestorMatcher`, because it encodes the alleles of every site from the
-  tables each time. This dominates for early ancestors.
-- `find_path` itself is slower (1.10 on group 1485, 1.18 on samples, timed
-  separately) despite executing fewer instructions, because it misses the
-  cache more. Callgrind's cache simulation on the profiling sample: tsls
-  has 2% fewer instructions but 25% more L1 read misses, 2.2 times the L1
-  write misses and 35% more last-level read misses than tsinfer-hmm. The
-  last-level misses are mostly in tskit's tree position scans, which read
-  edge coordinates through the index arrays (`left[order[j]]`) where
-  tsinfer-hmm scans a contiguous array of sorted edges, and in reading
-  mutations from `tsk_mutation_t` structs. The extra L1 write misses come
-  from two of the optimisations, which write per-edge marks into
-  `allelic_state` and `likelihood_cache`.
+Two full runs of the current build (`9806f55`), tsls / tsinfer-hmm:
 
-After sharing a `tsls_index_t` between HMMs (allele encoding, compact
-mutations, and the edges copied in tskit's insertion and removal orders),
-paired wall times, tsls / tsinfer-hmm:
+| workload | queries | round 1 | round 2 |
+|---|---|---|---|
+| ancestors, group 84 | 50 | 0.72 | 0.75 |
+| ancestors, group 1000 | 50 | 0.76 | 0.74 |
+| ancestors, group 1483 | 100 | 0.91 | 0.80 |
+| ancestors, group 1484 | 50 | 0.96 | 0.79 |
+| ancestors, group 1485 | 100 | 1.00 | 1.00 |
+| samples | 6 | 0.87 | 0.81 |
 
-| workload | queries | ratio |
-|---|---|---|
-| ancestors, group 84 | 50 | 0.74 |
-| ancestors, group 1000 | 50 | 0.78 |
-| ancestors, group 1483 | 100 | 0.91 |
-| ancestors, group 1484 | 50 | 1.02 |
-| ancestors, group 1485 | 100 | 0.79 |
-| samples | 6 | 1.07-1.16 |
+tsls is now faster than tsinfer-hmm on samples (by 13-19%) and on most
+ancestor groups, and level on group 1485, with the same paths and
+traceback sizes.
 
-Paired ratios for the samples vary by a few percent between runs of the
-same build. Neither per-edge write added by the instruction count work
-explains the remaining gap: without the cache clear in `remove_edge`, the
-samples gave 1.07 and 1.10 (against 1.07 and 1.10 with it), and with the
-roots marked at each site instead of throughout the sweep, 1.11 and 1.11.
+#### How it got there
 
-A sampling profile (perf, 2 whole samples) puts tsls's matching at 1.21
-times tsinfer-hmm's samples. The allele walk costs the same in both. The
-difference is in the likelihood cache walks (finding inherited values,
-filling and resetting the cache, inserting mutation likelihoods), which
-execute about the same instructions as tsinfer-hmm's but take 30-80%
-longer, and in checking for nodes leaving the tree. Each step of these
-walks reads several per-node arrays (`L`, `L_cache`, the flag arrays,
-`parent`); with 433k nodes they total more than the 16 MB L3 cache on the
-test machine, and tsls uses more of them than tsinfer-hmm.
+| workload | after the refactor | + shared index | + huge pages |
+|---|---|---|---|
+| ancestors, group 84 | 1.43 | 0.73-0.77 | 0.72-0.75 |
+| ancestors, group 1000 | 1.19 | 0.75-0.76 | 0.74-0.76 |
+| ancestors, group 1483 | 1.19 | 0.88-0.92 | 0.80-0.91 |
+| ancestors, group 1484 | 1.23 | 0.99-1.00 | 0.79-0.96 |
+| ancestors, group 1485 | 1.25 | 0.97-1.06 | 1.00 |
+| samples | 1.14 | 0.99-1.17 | 0.81-0.87 |
+
+(Ranges are over four runs of the shared index build and two of the huge
+pages build, run alternately with other builds.)
+
+- **After the refactor**, tsls was slower despite executing fewer
+  instructions. Building a `tsls.Hmm` took 4-8 ms against 1.5 ms for
+  tsinfer-hmm's `AncestorMatcher`, because each one encoded the alleles
+  of every site from the tables, which dominated for early ancestors.
+  And `find_path` missed the cache more: callgrind's cache simulation on
+  the profiling sample showed 2% fewer instructions but 25% more L1 read
+  misses and 35% more last-level read misses than tsinfer-hmm, mostly from
+  reading edges through tskit's order arrays and mutations from
+  `tsk_mutation_t` structs.
+- **Shared index** (`92d471b`, `ebf50a2`): a `tsls_index_t`, built once
+  per tree sequence and shared by HMMs, holds the allele encoding, compact
+  mutation arrays, and the edges copied in tskit's insertion and removal
+  orders, which the ranges of a `tsk_tree_position_t` index directly.
+  Late ancestors gain most, because finding their first tree scans most of
+  the edges, now sequentially.
+- **Huge pages** (`9806f55`): the likelihood walks jump around per-node
+  arrays of several MB each (433k nodes), so with 4 KB pages most steps
+  miss the TLB. The large arrays are now mapped directly, aligned to
+  2 MiB, with `madvise(MADV_HUGEPAGE)` (Linux). They have to be mapped
+  directly: glibc reuses memory already faulted in with small pages, which
+  `madvise` doesn't change, so `posix_memalign` + `madvise` gave no huge
+  pages at all.
+
+#### Measuring on this machine
+
+- Single runs mislead. tsls's time for the same build varied by up to 20%
+  between processes (6 samples: 16.4 to 19.9 s) while tsinfer-hmm's was
+  steady, which fits physical page placement varying between runs; with
+  huge pages tsls's times are steadier (14.2 and 14.7 s). Another session
+  on the machine may also compete for memory bandwidth at times. Builds
+  were therefore compared with full runs repeated in alternation (build A,
+  build B, A, B), and a single `--quick` run once showed 1.36 for group
+  1485 where full runs of the same build gave 0.85-0.92.
+- Callgrind's cache simulation is useful for finding misses but not for
+  judging changes: it showed the edge copies increasing last-level misses
+  (1.31M to 1.83M on the profiling sample, since tskit's scans still read
+  the edge table and the copies add a second stream), yet they were much
+  faster, because the simulator doesn't model the hardware prefetching
+  that hides the cost of a sequential stream.
+- Instruction counts and wall time can move in opposite directions:
+  reverting two changes that reduced instructions by adding per-edge
+  writes (the cache clear in `remove_edge`, and keeping roots marked
+  through the sweep) made no measurable difference to the samples.
+
+#### Node layouts that didn't help
+
+A `perf` profile of the shared index build put the samples' remaining
+time in the likelihood cache walks, which read several per-node arrays at
+each step. Two layouts that put these fields together were tried, each in
+two full runs alternating with the then-current build:
+
+- One 24-byte record per node (likelihood, its cache, parent, allelic
+  state, recombination flag and its cache): worse everywhere (samples
+  1.52 and 1.52; ancestors up to 1.64). Indexing 24-byte records also
+  costs an address computation at every step of the walks: instructions
+  on the profiling sample rose from 1.52G to 1.82G.
+- An 8-byte record {parent, allelic state, flags} and a 16-byte record
+  {likelihood, its cache}: no consistent difference from separate arrays.
