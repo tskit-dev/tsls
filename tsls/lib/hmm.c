@@ -359,6 +359,56 @@ out:
     return ret;
 }
 
+/* Copy the edges in tskit's insertion and removal orders, so that the
+ * tree position's ranges can be read sequentially. */
+static void
+tsls_index_copy_edges(tsls_index_t *self)
+{
+    const tsk_table_collection_t *tables = self->tree_sequence->tables;
+    const tsk_id_t *restrict insertion_order = tables->indexes.edge_insertion_order;
+    const tsk_id_t *restrict removal_order = tables->indexes.edge_removal_order;
+    const tsk_id_t *restrict edge_parent = tables->edges.parent;
+    const tsk_id_t *restrict edge_child = tables->edges.child;
+    const double *restrict edge_left = tables->edges.left;
+    const double *restrict edge_right = tables->edges.right;
+    tsls_edge_t *restrict insertion_edges = self->insertion_edges;
+    tsls_edge_t *restrict removal_edges = self->removal_edges;
+    size_t j;
+    tsk_id_t e;
+
+    for (j = 0; j < self->num_edges; j++) {
+        e = insertion_order[j];
+        insertion_edges[j].parent = edge_parent[e];
+        insertion_edges[j].child = edge_child[e];
+        insertion_edges[j].coordinate = edge_right[e];
+        e = removal_order[j];
+        removal_edges[j].parent = edge_parent[e];
+        removal_edges[j].child = edge_child[e];
+        removal_edges[j].coordinate = edge_left[e];
+    }
+}
+
+/* Return the copied edges for the specified order (one of the ranges of a
+ * tree position). */
+static inline const tsls_edge_t *
+tsls_index_get_edges(const tsls_index_t *self, const tsk_id_t *order)
+{
+    return order == self->tree_sequence->tables->indexes.edge_insertion_order
+               ? self->insertion_edges
+               : self->removal_edges;
+}
+
+/* Returns true if the specified edge in the in range of a tree position
+ * just seeked from null (see seek_tree_position) covers x. Edges in the
+ * range all have left <= x in insertion order (a forward seek) and right > x
+ * in removal order (a backward seek), so one coordinate is enough. */
+static inline bool
+seek_edge_covers(const tsk_tree_position_t *tp, const tsls_edge_t *edge, double x)
+{
+    return tp->direction == TSK_DIR_FORWARD ? edge->coordinate > x
+                                            : edge->coordinate <= x;
+}
+
 int
 tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
     const char **alleles, tsk_size_t num_alleles)
@@ -381,9 +431,12 @@ tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
     self->mutation_node = malloc((num_mutations + 1) * sizeof(*self->mutation_node));
     self->mutation_derived_state
         = malloc((num_mutations + 1) * sizeof(*self->mutation_derived_state));
+    self->insertion_edges = malloc((self->num_edges + 1) * sizeof(*self->insertion_edges));
+    self->removal_edges = malloc((self->num_edges + 1) * sizeof(*self->removal_edges));
     if (self->num_alleles == NULL || self->ancestral_state == NULL
         || self->site_mutations_offset == NULL || self->mutation_node == NULL
-        || self->mutation_derived_state == NULL) {
+        || self->mutation_derived_state == NULL || self->insertion_edges == NULL
+        || self->removal_edges == NULL) {
         ret = TSLS_ERR_NO_MEMORY;
         goto out;
     }
@@ -391,6 +444,7 @@ tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
     if (ret != 0) {
         goto out;
     }
+    tsls_index_copy_edges(self);
 out:
     return ret;
 }
@@ -851,25 +905,23 @@ tsls_hmm_insert_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c, bool update_likel
 static void
 tsls_hmm_update_tree(tsls_hmm_t *self, const tsk_tree_position_t *tp)
 {
-    const tsk_id_t *restrict edge_parent = self->tree_sequence->tables->edges.parent;
-    const tsk_id_t *restrict edge_child = self->tree_sequence->tables->edges.child;
+    const tsls_edge_t *restrict out = tsls_index_get_edges(self->index, tp->out.order);
+    const tsls_edge_t *restrict in = tsls_index_get_edges(self->index, tp->in.order);
     const int direction = tp->direction;
     tsk_id_t *restrict isolated = self->likelihood_nodes_tmp;
     double *restrict L = self->likelihood;
-    tsk_id_t j, e, u;
+    tsk_id_t j, u;
     int k, num_left, num_isolated = 0;
 
     for (j = tp->out.start; j != tp->out.stop; j += direction) {
-        e = tp->out.order[j];
         tsls_hmm_remove_edge(
-            self, edge_parent[e], edge_child[e], true, isolated, &num_isolated);
+            self, out[j].parent, out[j].child, true, isolated, &num_isolated);
     }
     for (j = tp->out.start; j != tp->out.stop; j += direction) {
-        tsls_hmm_reset_likelihood_cache(self, edge_parent[tp->out.order[j]]);
+        tsls_hmm_reset_likelihood_cache(self, out[j].parent);
     }
     for (j = tp->in.start; j != tp->in.stop; j += direction) {
-        e = tp->in.order[j];
-        tsls_hmm_insert_edge(self, edge_parent[e], edge_child[e], true);
+        tsls_hmm_insert_edge(self, in[j].parent, in[j].child, true);
     }
     /* Nodes that are still isolated have left the tree. Nodes that were
      * isolated and then inserted again keep their likelihoods. We mark the
@@ -897,11 +949,8 @@ tsls_hmm_init_sweep(
 {
     int ret = 0;
     const size_t N = self->num_nodes;
-    const tsk_id_t *restrict edge_parent = self->tree_sequence->tables->edges.parent;
-    const tsk_id_t *restrict edge_child = self->tree_sequence->tables->edges.child;
-    const double *restrict edge_left = self->tree_sequence->tables->edges.left;
-    const double *restrict edge_right = self->tree_sequence->tables->edges.right;
-    tsk_id_t u, j, e;
+    const tsls_edge_t *restrict in;
+    tsk_id_t u, j;
     size_t k;
 
     memset(self->parent, 0xff, N * sizeof(*self->parent));
@@ -920,10 +969,10 @@ tsls_hmm_init_sweep(
     if (ret != 0) {
         goto out;
     }
+    in = tsls_index_get_edges(self->index, tp->in.order);
     for (j = tp->in.start; j != tp->in.stop; j += tp->direction) {
-        e = tp->in.order[j];
-        if (edge_left[e] <= position && position < edge_right[e]) {
-            tsls_hmm_insert_edge(self, edge_parent[e], edge_child[e], false);
+        if (seek_edge_covers(tp, &in[j], position)) {
+            tsls_hmm_insert_edge(self, in[j].parent, in[j].child, false);
         }
     }
     self->num_likelihood_nodes = 0;
@@ -1544,7 +1593,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
 {
     int ret = 0;
     tsk_tree_position_t tp;
-    tsk_id_t site, j, e, u, max_likelihood_node;
+    tsk_id_t site, j, u, max_likelihood_node;
     double x;
     bool valid;
     tsk_id_t *restrict parent = self->parent;
@@ -1555,11 +1604,8 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
      * whose allelic state is the site's ancestral state, so the walk to find
      * a node's allele doesn't need to check for the root. */
     const tsk_id_t virtual_root = (tsk_id_t) self->num_nodes;
-    const tsk_edge_table_t *edges = &self->tree_sequence->tables->edges;
-    const tsk_id_t *restrict edge_parent = edges->parent;
-    const tsk_id_t *restrict edge_child = edges->child;
-    const double *restrict edge_left = edges->left;
-    const double *restrict edge_right = edges->right;
+    const tsls_edge_t *restrict in;
+    const tsls_edge_t *restrict out;
     const double start_pos = start == 0 ? 0 : sites_position[start];
     const double end_pos
         = end == (tsk_id_t) self->num_sites ? self->sequence_length : sites_position[end];
@@ -1588,10 +1634,10 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     if (ret != 0) {
         goto out;
     }
+    in = tsls_index_get_edges(self->index, tp.in.order);
     for (j = tp.in.start; j != tp.in.stop; j += tp.direction) {
-        e = tp.in.order[j];
-        if (edge_left[e] <= x && x < edge_right[e]) {
-            parent[edge_child[e]] = edge_parent[e];
+        if (seek_edge_covers(&tp, &in[j], x)) {
+            parent[in[j].child] = in[j].parent;
         }
     }
     for (site = end - 1; site >= start; site--) {
@@ -1599,12 +1645,13 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
             valid = tsk_tree_position_prev(&tp);
             assert(valid);
             (void) valid;
+            out = tsls_index_get_edges(self->index, tp.out.order);
+            in = tsls_index_get_edges(self->index, tp.in.order);
             for (j = tp.out.start; j != tp.out.stop; j--) {
-                parent[edge_child[tp.out.order[j]]] = virtual_root;
+                parent[out[j].child] = virtual_root;
             }
             for (j = tp.in.start; j != tp.in.stop; j--) {
-                e = tp.in.order[j];
-                parent[edge_child[e]] = edge_parent[e];
+                parent[in[j].child] = in[j].parent;
             }
         }
         allelic_state[virtual_root] = self->index->ancestral_state[site];
