@@ -518,3 +518,32 @@ Two things account for this:
   mutations from `tsk_mutation_t` structs. The extra L1 write misses come
   from two of the optimisations, which write per-edge marks into
   `allelic_state` and `likelihood_cache`.
+
+After sharing a `tsls_index_t` between HMMs (allele encoding, compact
+mutations, and the edges copied in tskit's insertion and removal orders),
+paired wall times, tsls / tsinfer-hmm:
+
+| workload | queries | ratio |
+|---|---|---|
+| ancestors, group 84 | 50 | 0.74 |
+| ancestors, group 1000 | 50 | 0.78 |
+| ancestors, group 1483 | 100 | 0.91 |
+| ancestors, group 1484 | 50 | 1.02 |
+| ancestors, group 1485 | 100 | 0.79 |
+| samples | 6 | 1.07-1.16 |
+
+Paired ratios for the samples vary by a few percent between runs of the
+same build. Neither per-edge write added by the instruction count work
+explains the remaining gap: without the cache clear in `remove_edge`, the
+samples gave 1.07 and 1.10 (against 1.07 and 1.10 with it), and with the
+roots marked at each site instead of throughout the sweep, 1.11 and 1.11.
+
+A sampling profile (perf, 2 whole samples) puts tsls's matching at 1.21
+times tsinfer-hmm's samples. The allele walk costs the same in both. The
+difference is in the likelihood cache walks (finding inherited values,
+filling and resetting the cache, inserting mutation likelihoods), which
+execute about the same instructions as tsinfer-hmm's but take 30-80%
+longer, and in checking for nodes leaving the tree. Each step of these
+walks reads several per-node arrays (`L`, `L_cache`, the flag arrays,
+`parent`); with 433k nodes they total more than the 16 MB L3 cache on the
+test machine, and tsls uses more of them than tsinfer-hmm.
