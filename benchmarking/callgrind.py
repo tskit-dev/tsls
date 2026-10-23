@@ -36,7 +36,8 @@ FIND_PATH_FUNCTIONS = {
 
 # (workload, number of queries, maximum number of sites per query). Each is
 # about 2G instructions in tsinfer-hmm. A whole sample is about 10G, so the
-# sample is restricted to the middle of its window.
+# sample is restricted to the start of its window: like a whole sample, its
+# forward sweep then starts at the first site, without a long seek.
 WORKLOADS = [
     ("ancestors_g84", 20, None),
     ("ancestors_g1000", 20, None),
@@ -59,12 +60,11 @@ def make_engine(name, ts, model):
 
 def clip_window(start, end, max_sites):
     """
-    Return the middle max_sites sites of the window [start, end).
+    Return the first max_sites sites of the window [start, end).
     """
-    if max_sites is None or end - start <= max_sites:
+    if max_sites is None:
         return start, end
-    start = start + (end - start - max_sites) // 2
-    return start, start + max_sites
+    return start, min(end, start + max_sites)
 
 
 @click.group()
@@ -85,7 +85,7 @@ def cli():
 def run(workload_dir, engine_name, num_queries, max_sites, instrument):
     """
     Match the first NUM_QUERIES queries in WORKLOAD_DIR with the specified
-    engine, each over at most MAX_SITES sites in the middle of its window,
+    engine, each over at most MAX_SITES sites at the start of its window,
     printing the parents of each path.
     """
     workload_dir = pathlib.Path(workload_dir)
@@ -115,7 +115,7 @@ def read_total_ir(path):
 
 
 def out_path(out_dir, workload, num_queries, max_sites, engine_name):
-    sites = "" if max_sites is None else f".s{max_sites}"
+    sites = "" if max_sites is None else f".first{max_sites}"
     return pathlib.Path(out_dir) / (
         f"callgrind.{workload}.n{num_queries}{sites}.{engine_name}.out"
     )
