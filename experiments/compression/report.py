@@ -28,12 +28,28 @@ def summarise_matrix(row, num_sites, parsimony_sites):
     """
     ts = tskit.load(RESULTS / row.trees)
     cm = tsls.load_compressed_matrix(RESULTS / row.matrix, ts)
-    lists = analysis.list_measures(cm)
+    num_alleles = getattr(row, "num_alleles", np.nan)
+    if np.isnan(num_alleles):
+        # Captured before num_alleles was recorded: sc2ts and msprime use ACGT
+        num_alleles = 4
+    site_map = analysis.SiteMap(
+        row.algorithm,
+        rho=row.rho,
+        mu=row.mu,
+        n=row.num_nodes if row.weight_by_n else 1,
+        num_alleles=num_alleles,
+    )
+    lists = analysis.list_measures(cm, site_map)
     decoded = analysis.decoded_measures(
-        cm, num_sites=num_sites, parsimony_sites=parsimony_sites
+        cm, num_sites=num_sites, parsimony_sites=parsimony_sites, site_map=site_map
     )
     nonempty = lists[lists.stored > 0]
+    # Encoding measures compare each site with the previous non-empty one
+    carried = nonempty.iloc[1:]
+    churn = carried.entered + carried.left
+    first = nonempty.stored.iloc[0]
     summary = {
+        "case": row.case,
         "arg": row.arg,
         "label": row.label,
         "query": row.query,
@@ -48,11 +64,29 @@ def summarise_matrix(row, num_sites, parsimony_sites):
         "distinct": nonempty.distinct.mean(),
         "median_clade_size": decoded.median_clade_size.mean(),
         "mean_clade_size": decoded.mean_clade_size.mean(),
-        "samples_only": decoded.samples_only.mean(),
+        "samples_only": decoded.samples_only.mean()
+        if "samples_only" in decoded
+        else np.nan,
         "jaccard": nonempty.jaccard.mean(),
         "delta_per_site": (nonempty.added + nonempty.removed).mean(),
         "mutation_nodes": nonempty.mutation_nodes.mean(),
+        "churn": churn.mean(),
+        "changed": carried.changed.mean(),
+        "changed_tol": carried.changed_tol.mean(),
+        "affine_residual": carried.affine_residual.mean(),
+        "affine_fit": carried.affine_fit.mean(),
+        "affine_work": (churn + carried.affine_residual).mean(),
+        "total_stored": nonempty.stored.sum(),
+        "delta_values": first + (churn + carried.changed).sum(),
+        "affine_delta_values": first
+        + (churn + carried.affine_residual).sum()
+        + 2 * len(nonempty),
+        # The same, on the minimal (change point) lists at the decoded sites
+        "cp_churn": (decoded.cp_entered + decoded.cp_left).mean(),
+        "cp_changed": decoded.cp_changed.mean(),
+        "cp_affine_residual": decoded.cp_affine_residual.mean(),
     }
+    summary["cp_affine_work"] = summary["cp_churn"] + summary["cp_affine_residual"]
     for digits in [1, 2, 4]:
         summary[f"quantised_{digits}"] = decoded[f"quantised_{digits}"].mean()
     if row.algorithm == "viterbi":
@@ -64,12 +98,24 @@ def summarise_matrix(row, num_sites, parsimony_sites):
         summary["delta_entries"] = (nonempty.added + nonempty.removed).sum() + (
             nonempty.stored.iloc[0]
         )
+        # The traceback stores nodes and flags, not values
+        summary["flag_changed"] = carried.flag_changed.mean()
+        summary["delta_traceback"] = first + (churn + carried.flag_changed).sum()
     return summary, lists, decoded, analysis.value_histogram(cm, top=6)
 
 
 def plot_along_genome(lists, decoded, title, path):
     fig, ax = plt.subplots(figsize=(10, 3.5))
-    ax.plot(lists.site, lists.stored, label="stored", linewidth=0.8)
+    nonempty = lists[lists.stored > 0]
+    ax.plot(nonempty.site, nonempty.stored, label="stored", linewidth=0.8)
+    if "affine_residual" in nonempty:
+        work = nonempty.entered + nonempty.left + nonempty.affine_residual
+        ax.plot(
+            nonempty.site,
+            work.rolling(25, min_periods=1).mean(),
+            label="entered + left + affine residual (rolling mean)",
+            linewidth=0.8,
+        )
     ax.plot(
         decoded.site,
         decoded.change_points,
@@ -112,6 +158,84 @@ def plot_encodings(summary, path):
     plt.close(fig)
 
 
+def plot_work(summary, path):
+    """
+    Plot the per-site work proxy of the current engine (the stored list)
+    against an affine engine (entries entering or leaving the list, and
+    values not following the global map), for each matrix.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+    for ax, algorithm in zip(axes, ["viterbi", "forward"]):
+        d = summary[summary.algorithm == algorithm]
+        labels = [f"{r.arg}\n{r.label}" for r in d.itertuples()]
+        x = np.arange(len(d))
+        width = 0.35
+        ax.bar(x - width / 2, d.stored, width, label="stored (current engine)")
+        ax.bar(x + width / 2, d.affine_work, width, label="churn + affine residual")
+        ax.set_yscale("log")
+        ax.set_xticks(x, labels, rotation=90, fontsize=5)
+        ax.set_ylabel("Entries per site")
+        ax.set_title(algorithm)
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
+def encodings_table(summary, algorithm):
+    """
+    Return the markdown table of per-site encoding measures and encoding
+    sizes for the specified algorithm, with one row per ARG (means over its
+    queries).
+    """
+    d = summary[summary.algorithm == algorithm].copy()
+    d["values_delta_saving"] = d.total_stored / d.delta_values
+    d["values_affine_saving"] = d.total_stored / d.affine_delta_values
+    d["work_saving"] = d.stored / d.affine_work
+    columns = [
+        "stored",
+        "churn",
+        "changed",
+        "changed_tol",
+        "affine_residual",
+        "affine_fit",
+        "values_delta_saving",
+        "values_affine_saving",
+        "work_saving",
+    ]
+    if algorithm == "viterbi":
+        d["traceback_delta_saving"] = d.traceback_entries / d.delta_traceback
+        columns += ["flag_changed", "traceback_delta_saving"]
+    return grouped_table(d, columns)
+
+
+def minimal_table(summary, algorithm):
+    """
+    Return the markdown table of encoding measures on the minimal (change
+    point) lists, at the decoded sites.
+    """
+    d = summary[summary.algorithm == algorithm].copy()
+    d["cp_delta_work_saving"] = d.change_points / (d.cp_churn + d.cp_changed)
+    d["cp_affine_work_saving"] = d.change_points / d.cp_affine_work
+    columns = [
+        "stored",
+        "change_points",
+        "cp_churn",
+        "cp_changed",
+        "cp_affine_residual",
+        "cp_delta_work_saving",
+        "cp_affine_work_saving",
+    ]
+    return grouped_table(d, columns)
+
+
+def grouped_table(d, columns):
+    table = d.groupby(["case", "arg"], sort=False)[columns].mean().reset_index()
+    counts = d.groupby(["case", "arg"], sort=False).size().to_numpy()
+    table.insert(2, "queries", counts)
+    return table.to_markdown(index=False, floatfmt=".3g")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
@@ -123,8 +247,17 @@ def main():
         default=10,
         help="Sites for the samples-only parsimony",
     )
+    parser.add_argument(
+        "--cases",
+        default=None,
+        help="Only analyse these cases (comma separated), for quick iteration",
+    )
     args = parser.parse_args()
     manifest = pd.read_csv(RESULTS / "manifest.csv")
+    if "case" not in manifest:
+        manifest["case"] = manifest.arg.str.split("_").str[0]
+    if args.cases is not None:
+        manifest = manifest[manifest.case.isin(args.cases.split(","))]
     rows = []
     plots = RESULTS / "plots"
     plots.mkdir(exist_ok=True)
@@ -150,6 +283,7 @@ def main():
     summary = pd.DataFrame(rows)
     summary.to_csv(RESULTS / "summary.csv", index=False)
     plot_encodings(summary, plots / "encodings.png")
+    plot_work(summary, plots / "affine_work.png")
 
     viterbi = summary[summary.algorithm == "viterbi"].copy()
     viterbi["delta_saving"] = viterbi.traceback_entries / viterbi.delta_entries
@@ -215,6 +349,53 @@ def main():
         ].to_markdown(index=False, floatfmt=".3g"),
         "",
         "`quantised_d`: change points after rounding log10 values to 1/d.",
+        "",
+        "## Encodings",
+        "",
+        "Per-site means, comparing each site's stored list with the previous",
+        "site's, then averaged over the queries of each ARG. `churn` is the",
+        "number of nodes entering or leaving the list. `changed` counts nodes",
+        "in both lists whose value changed (`changed_tol`: by a relative",
+        "difference of more than 1e-9). `affine_residual` counts those whose",
+        "value is not predicted by the site's global map (Viterbi:",
+        "max(v stay, rho/n) e / c; forward: a v + b, with b fitted), and",
+        "`affine_fit` is the fraction that are.",
+        "",
+        "Savings are ratios of entries stored over all sites. For values: the",
+        "full lists against a delta encoding (first list, then churn and",
+        "changed values), and against an affine + delta encoding (churn and",
+        "affine residuals, plus two map parameters per site). `work_saving`",
+        "is the list size against churn + affine residual per site: the",
+        "values an affine engine would update explicitly. For the Viterbi",
+        "traceback, which stores nodes and flags but not values, the engine's",
+        "lists against a delta encoding of nodes and flags.",
+        "",
+        "### Viterbi",
+        "",
+        encodings_table(summary, "viterbi"),
+        "",
+        "### Forward",
+        "",
+        encodings_table(summary, "forward"),
+        "",
+        "### On the minimal lists",
+        "",
+        "The engine stores its lists before removing values equal to the",
+        "parent's, and gives nodes their own values when edges change, so",
+        "the stored lists churn more than the values do. These are the same",
+        "measures on the change points (the minimal lists), comparing each",
+        "decoded site with the previous one: the entries an engine that kept",
+        "only change points would update with a delta encoding (churn +",
+        "changed) or an affine one (churn + affine residual), and the",
+        "corresponding savings against the change points.",
+        "",
+        "#### Viterbi",
+        "",
+        minimal_table(summary, "viterbi"),
+        "",
+        "#### Forward",
+        "",
+        minimal_table(summary, "forward"),
         "",
     ]
     (RESULTS / "report.md").write_text("\n".join(lines))

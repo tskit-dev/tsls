@@ -224,6 +224,7 @@ __marimo__/
 # Benchmarking data and results
 benchmarking/data/
 benchmarking/results/
+benchmarking/callgrind/
 
 # Verification output
 verification/tmp__NOBACKUP__/

@@ -34,7 +34,7 @@ reached again by recombination.
   changes no Viterbi likelihoods. With `weight_by_n=False`, as sc2ts uses,
   `t* = ρ`.
 
-`AncestorMatcher(count_distinct=True)` also records the mean number of
+`Hmm(count_distinct=True)` also records the mean number of
 **distinct** values per site in Viterbi (`mean_num_distinct_values`). This
 is compared with the number of stored nodes (`mean_traceback_size`).
 

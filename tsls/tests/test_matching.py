@@ -255,11 +255,11 @@ def queries(ts, A, present):
 
 def make_matcher(ts, rho, mu, weight_by_n, likelihood_threshold=None):
     m = ts.num_sites
-    mi = tsls.MatcherIndexes(ts, alleles=ALLELES)
-    am = tsls.AncestorMatcher(
-        mi,
+    am = tsls.Hmm(
+        ts,
         np.full(m, rho),
         np.full(m, mu),
+        alleles=ALLELES,
         weight_by_n=weight_by_n,
         likelihood_threshold=likelihood_threshold,
         extended_checks=True,
@@ -268,16 +268,20 @@ def make_matcher(ts, rho, mu, weight_by_n, likelihood_threshold=None):
     return am, n
 
 
-def path_by_site(ts, left, right, parent):
+def path_by_site(ts, left, right, parent, start=0, end=None):
     """
-    Return the node copied at each site, from a path in any order.
+    Return the node copied at each site in [start, end), from a path in any
+    order.
     """
+    if end is None:
+        end = ts.num_sites
     index = np.argsort(left)
     left, right, parent = left[index], right[index], parent[index]
-    assert left[0] == 0
-    assert right[-1] == ts.sequence_length
+    position = ts.sites_position
+    assert left[0] == (0 if start == 0 else position[start])
+    assert right[-1] == (ts.sequence_length if end == ts.num_sites else position[end])
     np.testing.assert_array_equal(left[1:], right[:-1])
-    segment = np.searchsorted(left, ts.sites_position, side="right") - 1
+    segment = np.searchsorted(left, position[start:end], side="right") - 1
     return parent[segment]
 
 
@@ -460,21 +464,102 @@ class TestViterbiPaths:
         assert list(right) == [ts.sites_position[-1]]
         np.testing.assert_array_equal(match[1:-1], h[1:-1])
 
+    @pytest.mark.parametrize("name", list(EXAMPLES))
+    def test_windows(self, name):
+        # The first tree of a window is found by seeking from whichever end
+        # of the sequence is closer, so check windows starting and ending
+        # throughout the sequence against the dense optimum for the window.
+        ts = EXAMPLES[name]()
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        rho, mu = 0.05, 0.02
+        am, n = make_matcher(ts, rho, mu, True)
+        m = ts.num_sites
+        for h in queries(ts, A, present)[:4]:
+            for start in range(m):
+                for end in range(start + 1, m + 1):
+                    match = np.zeros(m, dtype=np.int8)
+                    left, right, parent = am.find_path(h, start, end, match)
+                    path = path_by_site(ts, left, right, parent, start, end)
+                    sites = np.arange(start, end)
+                    np.testing.assert_array_equal(match[start:end], A[sites, path])
+                    window = (A[start:end], present[start:end])
+                    cont = continuous[start:end].copy()
+                    cont[0] = present[start]
+                    rho_a = np.full(end - start, rho)
+                    mu_a = np.full(end - start, mu)
+                    args = (*window, cont, h[start:end], rho_a, mu_a, len(ALLELES), n)
+                    value = dense.path_log_likelihood(*args, path)
+                    optimum = dense.viterbi_log_likelihood(*args)
+                    assert value == pytest.approx(optimum, rel=1e-9)
+
 
 class TestInterface:
-    def test_bad_alleles(self):
-        with pytest.raises(ValueError, match="Unknown"):
-            tsls.MatcherIndexes(single_tree_ts(), alleles=["A", "C"])
+    def test_unknown_allele(self):
+        ts = single_tree_ts()
+        m = ts.num_sites
+        with pytest.raises(tsls.LibraryError, match="not in the list"):
+            tsls.Hmm(ts, np.zeros(m), np.zeros(m), alleles=["A", "C"])
+
+    def test_duplicate_alleles(self):
+        ts = single_tree_ts()
+        m = ts.num_sites
+        with pytest.raises(ValueError, match="unique"):
+            tsls.Hmm(ts, np.zeros(m), np.zeros(m), alleles=["A", "A"])
 
     def test_default_binary_alleles(self):
         tables = tskit.Tree.generate_balanced(2, span=4).tree_sequence.dump_tables()
         add_mutations(tables, [(1, "0", [(0, "1")])])
         ts = finalise(tables)
-        mi = tsls.MatcherIndexes(ts)
-        am = tsls.AncestorMatcher(mi, np.full(1, 1e-3), np.full(1, 1e-3))
+        am = tsls.Hmm(ts, np.full(1, 1e-3), np.full(1, 1e-3))
         match = np.zeros(1, dtype=np.int8)
         _, _, parent = am.find_path(np.array([1], dtype=np.int8), 0, 1, match)
         assert list(parent) == [0]
+
+    @pytest.mark.parametrize("name", list(EXAMPLES))
+    def test_per_site_alleles(self, name):
+        # By default the alleles are numbered at each site as tskit does, so
+        # the matched haplotypes are tskit's genotypes.
+        ts = EXAMPLES[name]()
+        m = ts.num_sites
+        am = tsls.Hmm(ts, np.full(m, 1e-4), np.full(m, 1e-3), extended_checks=True)
+        G = ts.genotype_matrix(isolated_as_missing=False)
+        for j in range(ts.num_samples):
+            h = G[:, j].astype(np.int8)
+            match = np.zeros(m, dtype=np.int8)
+            am.find_path(h, 0, m, match)
+            np.testing.assert_array_equal(match, h)
+
+    def test_site_without_mutations(self):
+        # As in tsinfer's ancestor matching, a haplotype can carry an allele
+        # at a site that has no mutations in the tree sequence.
+        tables = tskit.Tree.generate_balanced(2, span=4).tree_sequence.dump_tables()
+        add_mutations(tables, [(1, "0", [(0, "1")]), (2, "0", [])])
+        ts = finalise(tables)
+        am = tsls.Hmm(ts, np.full(2, 1e-3), np.full(2, 1e-3))
+        match = np.zeros(2, dtype=np.int8)
+        _, _, parent = am.find_path(np.array([1, 1], dtype=np.int8), 0, 2, match)
+        assert list(parent) == [0]
+        assert list(match) == [1, 0]
+        with pytest.raises(tsls.LibraryError, match="Haplotype allele"):
+            am.find_path(np.array([1, 2], dtype=np.int8), 0, 2, match)
+
+    def test_shared_tree_sequence(self):
+        ts = two_tree_ts()
+        tts = tsls.TreeSequence(ts, alleles=ALLELES)
+        assert tts.num_nodes == ts.num_nodes
+        assert tts.num_sites == ts.num_sites
+        m = ts.num_sites
+        with pytest.raises(ValueError, match="making the tsls.TreeSequence"):
+            tsls.Hmm(tts, np.full(m, 0.01), np.full(m, 0.01), alleles=ALLELES)
+        am1 = tsls.Hmm(tts, np.full(m, 0.01), np.full(m, 0.01))
+        am2 = tsls.Hmm(ts, np.full(m, 0.01), np.full(m, 0.01), alleles=ALLELES)
+        assert am1.tree_sequence is tts
+        h = np.zeros(m, dtype=np.int8)
+        for x, y in zip(
+            am1.find_path(h, 0, m, np.zeros(m, dtype=np.int8)),
+            am2.find_path(h, 0, m, np.zeros(m, dtype=np.int8)),
+        ):
+            np.testing.assert_array_equal(x, y)
 
     @pytest.mark.parametrize("state", [5, -2])
     def test_bad_haplotype_allele(self, state):
@@ -498,13 +583,12 @@ class TestInterface:
             am.find_path(h, start, end, match)
 
     def test_bad_lengths(self):
-        ts = single_tree_ts()
-        mi = tsls.MatcherIndexes(ts, alleles=ALLELES)
+        ts = tsls.TreeSequence(single_tree_ts())
         with pytest.raises(ValueError, match="recombination"):
-            tsls.AncestorMatcher(mi, np.zeros(1), np.zeros(ts.num_sites))
+            tsls.Hmm(ts, np.zeros(1), np.zeros(ts.num_sites))
         with pytest.raises(ValueError, match="mismatch"):
-            tsls.AncestorMatcher(mi, np.zeros(ts.num_sites), np.zeros(1))
-        am, _ = make_matcher(ts, 1e-2, 1e-2, True)
+            tsls.Hmm(ts, np.zeros(ts.num_sites), np.zeros(1))
+        am, _ = make_matcher(single_tree_ts(), 1e-2, 1e-2, True)
         with pytest.raises(ValueError):
             am.forward_matrix(np.zeros(1, dtype=np.int8))
         h = np.zeros(ts.num_sites, dtype=np.int8)
@@ -529,10 +613,17 @@ class TestInterface:
             am.forward_matrix(h)
 
     def test_non_integer_coordinates(self):
-        tables = tskit.Tree.generate_balanced(2, span=4).tree_sequence.dump_tables()
-        tables.sites.add_row(position=1.5, ancestral_state="0")
-        with pytest.raises(tsls.LibraryError, match="integers"):
-            tsls.MatcherIndexes(finalise(tables))
+        # Node 0 on [0, 1.5), and node 1 on [1.5, 3.25)
+        tables = tskit.Tree.generate_balanced(2, span=3.25).tree_sequence.dump_tables()
+        add_mutations(tables, [(0.5, "0", [(0, "1")]), (2.75, "0", [(1, "1")])])
+        ts = finalise(tables)
+        am = tsls.Hmm(ts, np.full(2, 0.4), np.full(2, 1e-3))
+        match = np.zeros(2, dtype=np.int8)
+        left, right, parent = am.find_path(np.array([1, 1], dtype=np.int8), 0, 2, match)
+        assert left.dtype == np.float64
+        assert list(parent) == [1, 0]
+        assert list(left) == [2.75, 0]
+        assert list(right) == [3.25, 2.75]
 
     def test_memory_stats(self):
         ts = two_tree_ts()
@@ -577,9 +668,13 @@ class TestInterface:
 class TestPruning:
     def run_all(self, ts, h, **kwargs):
         m = ts.num_sites
-        mi = tsls.MatcherIndexes(ts, alleles=ALLELES)
-        am = tsls.AncestorMatcher(
-            mi, np.full(m, 0.05), np.full(m, 0.02), extended_checks=True, **kwargs
+        am = tsls.Hmm(
+            ts,
+            np.full(m, 0.05),
+            np.full(m, 0.02),
+            alleles=ALLELES,
+            extended_checks=True,
+            **kwargs,
         )
         match = np.zeros(m, dtype=np.int8)
         path = am.find_path(h, 0, m, match)
@@ -653,17 +748,15 @@ class TestPruning:
     )
     def test_bad_pruning(self, pruning):
         ts = single_tree_ts()
-        mi = tsls.MatcherIndexes(ts, alleles=ALLELES)
         m = ts.num_sites
         with pytest.raises(tsls.LibraryError, match="pruning"):
-            tsls.AncestorMatcher(mi, np.zeros(m), np.zeros(m), pruning=pruning)
+            tsls.Hmm(ts, np.zeros(m), np.zeros(m), alleles=ALLELES, pruning=pruning)
 
     def test_unknown_pruning_mode(self):
         ts = single_tree_ts()
-        mi = tsls.MatcherIndexes(ts, alleles=ALLELES)
         m = ts.num_sites
         with pytest.raises(ValueError, match="Unknown pruning"):
-            tsls.AncestorMatcher(mi, np.zeros(m), np.zeros(m), pruning=("x", 1))
+            tsls.Hmm(ts, np.zeros(m), np.zeros(m), pruning=("x", 1))
 
 
 class TestViterbiMatrix:

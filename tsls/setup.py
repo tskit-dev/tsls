@@ -13,13 +13,20 @@ kasdir = os.path.join(tskroot, "subprojects", "kastore")
 includes = ["lwt_interface", libdir, tskroot, tskdir, kasdir]
 
 tsls_source_files = [
-    "matcher.c",
+    "hmm.c",
     "err.c",
     "tsi_blkalloc.c",
 ]
-# The matcher only needs the tskit core and the table code used by the
-# LightweightTableCollection interface.
-tsk_source_files = ["core.c", "tables.c"]
+# The HMM works on a tsk_treeseq_t, so we need all of tskit.
+tsk_source_files = [
+    "core.c",
+    "tables.c",
+    "trees.c",
+    "genotypes.c",
+    "stats.c",
+    "convert.c",
+    "haplotype_matching.c",
+]
 kas_source_files = ["kastore.c"]
 
 sources = (

@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "Analysis of likelihood compression in the tsls engine."
 requires-python = ">=3.11"
 dependencies = [
+    "click>=8.5.0",
     "matplotlib",
     "msprime",
     "numpy>=2",
@@ -24,4 +25,4 @@ tsls = { path = "../../tsls", editable = true }
 line-length = 89
 
 [tool.ruff.lint.isort]
-known-first-party = ["analysis", "thresholding", "tsls", "verification"]
+known-first-party = ["analysis", "queries", "thresholding", "tsls", "verification"]

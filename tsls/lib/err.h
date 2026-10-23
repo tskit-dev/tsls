@@ -8,15 +8,11 @@
 #define TSLS_ERR_MATCH_IMPOSSIBLE_EXTREME_MUTATION_PROBA    -4
 #define TSLS_ERR_MATCH_IMPOSSIBLE_ZERO_RECOMB_PRECISION     -5
 #define TSLS_ERR_BAD_HAPLOTYPE_ALLELE                       -6
-#define TSLS_ERR_BAD_ANCESTRAL_STATE                        -7
-#define TSLS_ERR_BAD_MUTATION_DERIVED_STATE                 -8
-#define TSLS_ERR_BAD_MUTATION_NODE                          -9
-#define TSLS_ERR_BAD_MUTATION_SITE                          -10
-#define TSLS_ERR_BAD_EDGE_NODE                              -11
-#define TSLS_ERR_BAD_COORDINATE                             -12
-#define TSLS_ERR_BAD_SITE_RANGE                             -13
-#define TSLS_ERR_BAD_NORMALISATION_FACTOR                   -14
-#define TSLS_ERR_BAD_PRUNING                                -15
+#define TSLS_ERR_UNKNOWN_ALLELE                             -7
+#define TSLS_ERR_TOO_MANY_ALLELES                           -8
+#define TSLS_ERR_BAD_SITE_RANGE                             -9
+#define TSLS_ERR_BAD_NORMALISATION_FACTOR                   -10
+#define TSLS_ERR_BAD_PRUNING                                -11
 // clang-format on
 
 #ifdef __GNUC__

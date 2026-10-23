@@ -363,10 +363,242 @@ for the whole group divided by the number of haplotypes.
   not yet in the tree sequence.
 - tsls is 3–10% slower than tsinfer-hmm in mean time per query, with the
   same matcher memory (64 MiB for ancestors, about 90 MiB for samples)
-  and traceback sizes. Building tsls's `MatcherIndexes` takes several
+  and traceback sizes. (These figures predate the engine changes
+  described below, and `run.py` timings are biased by run order; see
+  [tsls against tsinfer-hmm](#tsls-against-tsinfer-hmm-where-the-time-goes).)
+  At the time, building tsls's `MatcherIndexes` took several
   times longer (3.6 s against 0.4 s for the full ancestors tree
-  sequence), but this is done once per group.
+  sequence); tsls now uses a `tsls.TreeSequence` (a `tsk_treeseq_t`)
+  instead, built once per group.
 - Per-query times are close to tsinfer's per-haplotype CPU time, so the
   HMM accounts for most of tsinfer's matching cost.
 - The cost is in the last few ancestor groups and the samples. Matching
   all 6,404 samples takes about 4.5 CPU hours with either engine.
+
+### tsls against tsinfer-hmm: where the time goes
+
+This section describes the engine before the `tsls_hmm_t` refactor (when
+it was `ancestor_matcher_t` in `matcher.c`); see
+[Instruction counts after the refactor](#instruction-counts-after-the-tsls_hmm_t-refactor)
+for the current state.
+
+tsls now stores a smaller Viterbi traceback than tsinfer-hmm (13 against
+21 entries per site for samples; see `experiments/compression/README.md`),
+but it isn't faster, because storing the traceback is under 1% of the
+time in both engines. Both engines update the same likelihood lists at
+each site, since tsinfer-hmm coalesces them right after storing. The time
+goes into walking up the tree, to find each listed node's allele and the
+value it inherits, and into moving from tree to tree. Building the first
+tree of a query means processing most of the edges before its window,
+which matters for late ancestors.
+
+Instruction counts (callgrind, collection limited to
+`ancestor_matcher_find_path`, 20 group 1485 ancestors and 1 sample) showed
+where tsls did more work:
+
+| | tsinfer-hmm | tsls before | tsls after |
+|---|---|---|---|
+| 20 ancestors, group 1485 | 6.65 G | 9.89 G | 7.44 G |
+| 1 sample | 9.92 G | 12.50 G | 10.96 G |
+
+Two changes to `tsls/lib/matcher.c` account for the difference between
+"before" and "after":
+
+1. **Allele lookup.** tsinfer-hmm's trees have the single root 0, whose
+   allele it sets to the ancestral state, so the walk up the tree only
+   checks for a set allele. tsls allows several roots, so
+   `get_allelic_state` also checked for the root at each step. tsls now
+   sets every root's allele to the ancestral state before the site's
+   update (the roots all have likelihoods, so they are found in the
+   likelihood list), and the three likelihood loops use
+   `get_marked_allelic_state`, which walks without the check. The walk
+   deliberately has no `assert`: the Python module is compiled with
+   asserts on, and an `assert` there cost as much as the check it
+   replaced (12.71 G on the sample, against 12.50 G before). The traceback
+   keeps the general `get_allelic_state`, since its tree has no
+   likelihoods.
+2. **Building the first tree.** For Viterbi, `init_sweep` now builds the
+   first tree with plain edge insertions and removals
+   (`ancestor_matcher_next_tree_topology`), as tsinfer-hmm does, instead
+   of passing every edge through the general wrappers that handle
+   likelihoods, subtree counts and isolated nodes. It also no longer
+   initialises `num_below`, which only forward and backward use. Forward
+   and backward still build it the general way, because they track
+   `num_below`.
+
+Wall times, measured in pairs: each query is run three times with each
+engine, alternating, and the best time is kept. Ratios are total tsls time
+over total tsinfer-hmm time (100 group 1485 ancestors, 6 samples):
+
+| | tsls before ÷ tsinfer-hmm | tsls after ÷ tsinfer-hmm |
+|---|---|---|
+| ancestors, group 1485 | 1.35 | 1.10 |
+| samples | 1.06 | 1.06 |
+
+- Change 2 is a clear win on late ancestors.
+- Change 1 removes about 1.5 G instructions per sample but no wall time.
+  The walk up the tree is limited by memory access (each step loads
+  `allelic_state` and `parent` for a node that is usually not in cache),
+  so the extra compare was nearly free.
+- What is left is mostly the same kind of overhead in the coalescing and
+  cache code: `ancestor_matcher_get_inherited_likelihood` and
+  `ancestor_matcher_reset_likelihood_cache` have asserts and root checks
+  inside their walks, which tsinfer-hmm's equivalents don't. By the
+  result for change 1, these would also save instructions more than time.
+- Timing caveat: `run.py` runs all queries for one engine, then all for
+  the next, so drift in machine speed (large on this VM: the same query
+  can vary by 20% between passes) shows up as a difference between
+  engines. Ratios from `run.py` ranged from 1.09 to 1.25 on the same
+  builds. Use paired measurements, as above, to compare engines.
+
+### Instruction counts after the `tsls_hmm_t` refactor
+
+The engine is now `tsls_hmm_t` (`tsls/lib/hmm.c`). It works directly on a
+`tsk_treeseq_t`, moves between trees with tskit's `tsk_tree_position_t`,
+and finds the first tree of a window by seeking from a null position
+instead of applying every edge before it. The git history from `7277b87`
+records each optimisation step and the dead ends, with instruction counts.
+
+`callgrind.py measure` counts instructions in `find_path` only, with setup
+run uninstrumented, on a profiling set sized to run in a few minutes
+(tsinfer-hmm's counts are cached, so only tsls is remeasured):
+
+```
+uv run python callgrind.py measure -j 4
+```
+
+The sample in that set is matched against its reference cut at site
+100,000, because matching only the first sites of the full reference makes
+tsinfer-hmm's traceback walk in from the end of the sequence, which a whole
+sample doesn't. On the original set (20 ancestors per group, 1 whole
+sample), before the refactor and after the optimisations:
+
+| workload | tsinfer-hmm | tsls before | tsls after | ratio after |
+|---|---|---|---|---|
+| ancestors, group 84 | 0.296 G | 0.608 G | 0.154 G | 0.52 |
+| ancestors, group 1000 | 0.621 G | 0.975 G | 0.320 G | 0.52 |
+| ancestors, group 1483 | 2.388 G | 2.845 G | 1.813 G | 0.76 |
+| ancestors, group 1484 | 9.911 G | 11.137 G | 9.046 G | 0.91 |
+| ancestors, group 1485 | 6.653 G | 7.445 G | 5.679 G | 0.85 |
+| 1 sample | 9.922 G | 10.955 G | 9.633 G | 0.97 |
+
+tsls finds tsinfer's path for all 1,914 queries in the six workloads, and
+its traceback sizes are unchanged.
+
+### Wall time after the refactor
+
+Fewer instructions did not at first mean less time, so wall time was then
+optimised directly. `paired.py` matches each query three times with each
+engine, alternating between them, keeps the best time for each, and
+reports total tsls time over total tsinfer-hmm time for each workload
+(the per-query median ratio is also printed). The times include building
+the matcher for each query, as `engines.py` does. `paired.py --quick`
+runs a smaller set, but it is too noisy on this VM to compare builds (see
+below).
+
+```
+uv run python paired.py
+```
+
+#### Current result
+
+Two full runs of the current build (`832fc5f`), tsls / tsinfer-hmm:
+
+| workload | queries | round 1 | round 2 |
+|---|---|---|---|
+| ancestors, group 84 | 50 | 0.80 | 0.81 |
+| ancestors, group 1000 | 50 | 0.82 | 0.82 |
+| ancestors, group 1483 | 100 | 0.78 | 0.78 |
+| ancestors, group 1484 | 50 | 0.84 | 0.82 |
+| ancestors, group 1485 | 100 | 0.90 | 0.87 |
+| samples | 6 | 0.79 | 0.82 |
+
+tsls is now 10-22% faster than tsinfer-hmm on every workload, with the
+same paths and traceback sizes. It executes more instructions than
+tsinfer-hmm on samples again (1.13 times, on the profiling sample), but
+fewer on all the ancestor groups.
+
+#### How it got there
+
+| workload | after the refactor | + shared index | + huge pages | + two node records |
+|---|---|---|---|---|
+| ancestors, group 84 | 1.43 | 0.73-0.77 | 0.72-0.76 | 0.80-0.81 |
+| ancestors, group 1000 | 1.19 | 0.75-0.76 | 0.74-0.76 | 0.82 |
+| ancestors, group 1483 | 1.19 | 0.88-0.92 | 0.80-0.96 | 0.78 |
+| ancestors, group 1484 | 1.23 | 0.99-1.00 | 0.79-0.96 | 0.82-0.84 |
+| ancestors, group 1485 | 1.25 | 0.97-1.06 | 0.95-1.00 | 0.87-0.90 |
+| samples | 1.14 | 0.99-1.17 | 0.81-1.11 | 0.79-0.82 |
+
+(Ranges are over four runs each of the shared index and huge pages
+builds, and two of the current build, run alternately with other
+builds.)
+
+- **After the refactor**, tsls was slower despite executing fewer
+  instructions. Building a `tsls.Hmm` took 4-8 ms against 1.5 ms for
+  tsinfer-hmm's `AncestorMatcher`, because each one encoded the alleles
+  of every site from the tables, which dominated for early ancestors.
+  And `find_path` missed the cache more: callgrind's cache simulation on
+  the profiling sample showed 2% fewer instructions but 25% more L1 read
+  misses and 35% more last-level read misses than tsinfer-hmm, mostly from
+  reading edges through tskit's order arrays and mutations from
+  `tsk_mutation_t` structs.
+- **Shared index** (`92d471b`, `ebf50a2`): a `tsls_index_t`, built once
+  per tree sequence and shared by HMMs, holds the allele encoding, compact
+  mutation arrays, and the edges copied in tskit's insertion and removal
+  orders, which the ranges of a `tsk_tree_position_t` index directly.
+  Late ancestors gain most, because finding their first tree scans most of
+  the edges, now sequentially.
+- **Huge pages** (`9806f55`): the likelihood walks jump around per-node
+  arrays of several MB each (433k nodes), so with 4 KB pages most steps
+  miss the TLB. The large arrays are now mapped directly, aligned to
+  2 MiB, with `madvise(MADV_HUGEPAGE)` (Linux). They have to be mapped
+  directly: glibc reuses memory already faulted in with small pages, which
+  `madvise` doesn't change, so `posix_memalign` + `madvise` gave no huge
+  pages at all.
+- **Two node records** (`832fc5f`): the per-node fields the walks read are
+  kept in an 8-byte record {parent, allelic state, recombination flag and
+  its cache} and a 16-byte record {likelihood, its cache}, so the allele
+  walk reads one record per step and the likelihood cache walks two,
+  instead of two and four arrays. This helps the late groups and samples
+  and costs a little on the early groups, whose queries take only 4-8 ms.
+  It also costs instructions (the profiling sample goes from 1.52G to
+  1.76G; GCC forms a pointer to the record at each step of the walk), but
+  each step is still one memory access.
+
+#### Measuring on this machine
+
+- Single runs mislead. tsls's time for the same build varied by up to 20%
+  between processes (6 samples: 16.4 to 19.9 s) while tsinfer-hmm's was
+  steady, which fits physical page placement varying between runs. With
+  huge pages alone it still varied (14.2 to 18.0 s over four runs); with
+  the two node records, the two runs gave 14.1 and 14.5 s. Another session
+  on the machine may also compete for memory bandwidth at times. Builds
+  were therefore compared with full runs repeated in alternation (build A,
+  build B, A, B), and a single `--quick` run once showed 1.36 for group
+  1485 where full runs of the same build gave 0.85-0.92.
+- Callgrind's cache simulation is useful for finding misses but not for
+  judging changes: it showed the edge copies increasing last-level misses
+  (1.31M to 1.83M on the profiling sample, since tskit's scans still read
+  the edge table and the copies add a second stream), yet they were much
+  faster, because the simulator doesn't model the hardware prefetching
+  that hides the cost of a sequential stream.
+- Instruction counts and wall time can move in opposite directions:
+  reverting two changes that reduced instructions by adding per-edge
+  writes (the cache clear in `remove_edge`, and keeping roots marked
+  through the sweep) made no measurable difference to the samples.
+
+#### Node layouts
+
+A `perf` profile of the shared index build put the samples' remaining
+time in the likelihood cache walks, which read several per-node arrays at
+each step. Two layouts that put these fields together were tried, each in
+two full runs alternating with the then-current build:
+
+- One 24-byte record per node (likelihood, its cache, parent, allelic
+  state, recombination flag and its cache): worse everywhere, before huge
+  pages (samples 1.52 and 1.52; ancestors up to 1.64). Indexing 24-byte
+  records also costs an address computation at every step of the walks:
+  instructions on the profiling sample rose from 1.52G to 1.82G.
+- The two records now used: no consistent difference from separate arrays
+  before huge pages, but faster on the late groups and samples with them
+  (above).

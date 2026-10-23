@@ -146,13 +146,13 @@ def make_matcher(
     likelihood_threshold=None,
     pruning=None,
     count_distinct=False,
-    matcher_indexes=None,
+    tree_sequence=None,
 ):
     m = ts.num_sites
-    if matcher_indexes is None:
-        matcher_indexes = tsls.MatcherIndexes(ts, alleles=ALLELES)
-    return tsls.AncestorMatcher(
-        matcher_indexes,
+    if tree_sequence is None:
+        tree_sequence = tsls.TreeSequence(ts, alleles=ALLELES)
+    return tsls.Hmm(
+        tree_sequence,
         np.full(m, rho),
         np.full(m, mu),
         weight_by_n=weight_by_n,
