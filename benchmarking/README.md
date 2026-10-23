@@ -502,34 +502,36 @@ uv run python paired.py
 
 #### Current result
 
-Two full runs of the current build (`9806f55`), tsls / tsinfer-hmm:
+Two full runs of the current build (`832fc5f`), tsls / tsinfer-hmm:
 
 | workload | queries | round 1 | round 2 |
 |---|---|---|---|
-| ancestors, group 84 | 50 | 0.72 | 0.75 |
-| ancestors, group 1000 | 50 | 0.76 | 0.74 |
-| ancestors, group 1483 | 100 | 0.91 | 0.80 |
-| ancestors, group 1484 | 50 | 0.96 | 0.79 |
-| ancestors, group 1485 | 100 | 1.00 | 1.00 |
-| samples | 6 | 0.87 | 0.81 |
+| ancestors, group 84 | 50 | 0.80 | 0.81 |
+| ancestors, group 1000 | 50 | 0.82 | 0.82 |
+| ancestors, group 1483 | 100 | 0.78 | 0.78 |
+| ancestors, group 1484 | 50 | 0.84 | 0.82 |
+| ancestors, group 1485 | 100 | 0.90 | 0.87 |
+| samples | 6 | 0.79 | 0.82 |
 
-tsls is now faster than tsinfer-hmm on samples (by 13-19%) and on most
-ancestor groups, and level on group 1485, with the same paths and
-traceback sizes.
+tsls is now 10-22% faster than tsinfer-hmm on every workload, with the
+same paths and traceback sizes. It executes more instructions than
+tsinfer-hmm on samples again (1.13 times, on the profiling sample), but
+fewer on all the ancestor groups.
 
 #### How it got there
 
-| workload | after the refactor | + shared index | + huge pages |
-|---|---|---|---|
-| ancestors, group 84 | 1.43 | 0.73-0.77 | 0.72-0.75 |
-| ancestors, group 1000 | 1.19 | 0.75-0.76 | 0.74-0.76 |
-| ancestors, group 1483 | 1.19 | 0.88-0.92 | 0.80-0.91 |
-| ancestors, group 1484 | 1.23 | 0.99-1.00 | 0.79-0.96 |
-| ancestors, group 1485 | 1.25 | 0.97-1.06 | 1.00 |
-| samples | 1.14 | 0.99-1.17 | 0.81-0.87 |
+| workload | after the refactor | + shared index | + huge pages | + two node records |
+|---|---|---|---|---|
+| ancestors, group 84 | 1.43 | 0.73-0.77 | 0.72-0.76 | 0.80-0.81 |
+| ancestors, group 1000 | 1.19 | 0.75-0.76 | 0.74-0.76 | 0.82 |
+| ancestors, group 1483 | 1.19 | 0.88-0.92 | 0.80-0.96 | 0.78 |
+| ancestors, group 1484 | 1.23 | 0.99-1.00 | 0.79-0.96 | 0.82-0.84 |
+| ancestors, group 1485 | 1.25 | 0.97-1.06 | 0.95-1.00 | 0.87-0.90 |
+| samples | 1.14 | 0.99-1.17 | 0.81-1.11 | 0.79-0.82 |
 
-(Ranges are over four runs of the shared index build and two of the huge
-pages build, run alternately with other builds.)
+(Ranges are over four runs each of the shared index and huge pages
+builds, and two of the current build, run alternately with other
+builds.)
 
 - **After the refactor**, tsls was slower despite executing fewer
   instructions. Building a `tsls.Hmm` took 4-8 ms against 1.5 ms for
@@ -553,6 +555,15 @@ pages build, run alternately with other builds.)
   directly: glibc reuses memory already faulted in with small pages, which
   `madvise` doesn't change, so `posix_memalign` + `madvise` gave no huge
   pages at all.
+- **Two node records** (`832fc5f`): the per-node fields the walks read are
+  kept in an 8-byte record {parent, allelic state, recombination flag and
+  its cache} and a 16-byte record {likelihood, its cache}, so the allele
+  walk reads one record per step and the likelihood cache walks two,
+  instead of two and four arrays. This helps the late groups and samples
+  and costs a little on the early groups, whose queries take only 4-8 ms.
+  It also costs instructions (the profiling sample goes from 1.52G to
+  1.76G; GCC forms a pointer to the record at each step of the walk), but
+  each step is still one memory access.
 
 #### Measuring on this machine
 
@@ -575,7 +586,7 @@ pages build, run alternately with other builds.)
   writes (the cache clear in `remove_edge`, and keeping roots marked
   through the sweep) made no measurable difference to the samples.
 
-#### Node layouts that didn't help
+#### Node layouts
 
 A `perf` profile of the shared index build put the samples' remaining
 time in the likelihood cache walks, which read several per-node arrays at
@@ -583,9 +594,10 @@ each step. Two layouts that put these fields together were tried, each in
 two full runs alternating with the then-current build:
 
 - One 24-byte record per node (likelihood, its cache, parent, allelic
-  state, recombination flag and its cache): worse everywhere (samples
-  1.52 and 1.52; ancestors up to 1.64). Indexing 24-byte records also
-  costs an address computation at every step of the walks: instructions
-  on the profiling sample rose from 1.52G to 1.82G.
-- An 8-byte record {parent, allelic state, flags} and a 16-byte record
-  {likelihood, its cache}: no consistent difference from separate arrays.
+  state, recombination flag and its cache): worse everywhere, before huge
+  pages (samples 1.52 and 1.52; ancestors up to 1.64). Indexing 24-byte
+  records also costs an address computation at every step of the walks:
+  instructions on the profiling sample rose from 1.52G to 1.82G.
+- The two records now used: no consistent difference from separate arrays
+  before huge pages, but faster on the late groups and samples with them
+  (above).
