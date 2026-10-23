@@ -130,6 +130,27 @@ typedef struct {
     tsls_edge_t *removal_edges;
 } tsls_index_t;
 
+/* The state of a node that the walks up the tree read, kept together (in
+ * 8 bytes) so that each step of a walk reads one record. */
+typedef struct {
+    tsk_id_t parent;
+    /* The allelic state at the current site, if the node has a mutation
+     * there (or is a root, during the sweeps) */
+    allele_t allelic_state;
+    int8_t recombination_required;
+    /* The recombination_required flag inherited by the node, valid where
+     * the likelihood cache is set. Only filled when coalescing Viterbi. */
+    int8_t recombination_required_cache;
+} tsls_node_t;
+
+/* A node's likelihood, with the cache used when coalescing. */
+typedef struct {
+    /* The node's likelihood, or NULL_LIKELIHOOD or NOT_IN_TREE */
+    double value;
+    /* The likelihood the node inherits, cached during coalescing */
+    double cache;
+} tsls_likelihood_t;
+
 /* The Li and Stephens HMM on a tree sequence. The index is borrowed, and
  * must not be changed or freed while the HMM is in use. */
 typedef struct {
@@ -146,8 +167,10 @@ typedef struct {
     double pruning_parameter;
     double *recombination_rate;
     double *mismatch_rate;
-    /* The quintuply linked tree */
-    tsk_id_t *parent;
+    /* The per-node state, with the parent links of the quintuply linked
+     * tree, which are completed by the arrays below */
+    tsls_node_t *tree;
+    tsls_likelihood_t *likelihood;
     tsk_id_t *left_child;
     tsk_id_t *right_child;
     tsk_id_t *left_sib;
@@ -158,17 +181,9 @@ typedef struct {
     bool track_num_below;
     /* The number of nodes in the tree that inherit each likelihood value. */
     int64_t *num_inheriting;
-    double *likelihood;
-    double *likelihood_cache;
-    /* The recombination_required flag inherited by each node, valid where
-     * likelihood_cache is set. Only filled when coalescing Viterbi. */
-    int8_t *recombination_required_cache;
-    allele_t *allelic_state;
     int num_likelihood_nodes;
     /* At each site, record a node with the maximum likelihood. */
     tsk_id_t *max_likelihood_node;
-    /* Used during traceback to map nodes where recombination is required. */
-    int8_t *recombination_required;
     tsk_id_t *likelihood_nodes_tmp;
     tsk_id_t *likelihood_nodes;
     node_state_list_t *traceback;

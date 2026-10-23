@@ -130,7 +130,7 @@ tsls_large_free(void *p, size_t size)
 #define MODE_BACKWARD 2
 
 static inline void
-remove_edge(tsk_id_t p, tsk_id_t c, tsk_id_t *restrict parent,
+remove_edge(tsk_id_t p, tsk_id_t c, tsls_node_t *restrict tree,
     tsk_id_t *restrict left_child, tsk_id_t *restrict right_child,
     tsk_id_t *restrict left_sib, tsk_id_t *restrict right_sib)
 {
@@ -147,19 +147,19 @@ remove_edge(tsk_id_t p, tsk_id_t c, tsk_id_t *restrict parent,
     } else {
         left_sib[rsib] = lsib;
     }
-    parent[c] = NULL_NODE;
+    tree[c].parent = NULL_NODE;
     left_sib[c] = NULL_NODE;
     right_sib[c] = NULL_NODE;
 }
 
 static inline void
-insert_edge(tsk_id_t p, tsk_id_t c, tsk_id_t *restrict parent,
+insert_edge(tsk_id_t p, tsk_id_t c, tsls_node_t *restrict tree,
     tsk_id_t *restrict left_child, tsk_id_t *restrict right_child,
     tsk_id_t *restrict left_sib, tsk_id_t *restrict right_sib)
 {
     const tsk_id_t u = right_child[p];
 
-    parent[c] = p;
+    tree[c].parent = p;
     if (u == NULL_NODE) {
         left_child[p] = c;
         left_sib[c] = NULL_NODE;
@@ -177,22 +177,22 @@ insert_edge(tsk_id_t p, tsk_id_t c, tsk_id_t *restrict parent,
  * site. insert_edge and remove_edge keep this up to date. */
 #define ROOT_ALLELE (-2)
 
-/* Returns the allelic state of node u, given the allelic_state array in
- * which the nodes with mutations at the current site are set and the roots
+/* Returns the allelic state of node u, given a tree in which the nodes with
+ * mutations at the current site have their allelic states set and the roots
  * are marked with ROOT_ALLELE, so the walk up the tree doesn't need to
  * check for the root. This is the innermost loop of the HMM, so there is
  * deliberately no assert here (the Python module is compiled with asserts
  * on); the marks are checked in tsls_hmm_check_state. */
 static inline allele_t
-get_marked_allelic_state(const allele_t *restrict allelic_state,
-    const tsk_id_t *restrict parent, tsk_id_t u, allele_t ancestral_state)
+get_marked_allelic_state(
+    const tsls_node_t *restrict tree, tsk_id_t u, allele_t ancestral_state)
 {
     allele_t state;
 
-    while (allelic_state[u] == TSK_NULL) {
-        u = parent[u];
+    while (tree[u].allelic_state == TSK_NULL) {
+        u = tree[u].parent;
     }
-    state = allelic_state[u];
+    state = tree[u].allelic_state;
     return likely(state != ROOT_ALLELE) ? state : ancestral_state;
 }
 
@@ -284,12 +284,13 @@ aligned_size(size_t size)
     return (size + 7) & ~((size_t) 7);
 }
 
-/* Store the values of the specified nodes at this site, and if R is not NULL
- * their recombination_required flags. */
+/* Store the likelihoods of the specified nodes at this site, and if
+ * with_flags is true their recombination_required flags. */
 static int WARN_UNUSED
 compressed_matrix_store_site(compressed_matrix_t *self, tsk_id_t site,
     double normalisation_factor, int num_values, const tsk_id_t *restrict nodes,
-    const double *restrict L, const int8_t *restrict R)
+    const tsls_likelihood_t *restrict L, const tsls_node_t *restrict tree,
+    bool with_flags)
 {
     int ret = 0;
     int j;
@@ -297,7 +298,7 @@ compressed_matrix_store_site(compressed_matrix_t *self, tsk_id_t site,
     double *restrict values_out;
     int8_t *restrict flags_out = NULL;
 
-    if (R != NULL) {
+    if (with_flags) {
         flags_out = tsi_blkalloc_get(
             &self->allocator, aligned_size((size_t) num_values * sizeof(int8_t)));
         if (flags_out == NULL) {
@@ -305,7 +306,7 @@ compressed_matrix_store_site(compressed_matrix_t *self, tsk_id_t site,
             goto out;
         }
         for (j = 0; j < num_values; j++) {
-            flags_out[j] = R[nodes[j]];
+            flags_out[j] = tree[nodes[j]].recombination_required;
         }
     }
 
@@ -319,7 +320,7 @@ compressed_matrix_store_site(compressed_matrix_t *self, tsk_id_t site,
     }
     for (j = 0; j < num_values; j++) {
         nodes_out[j] = nodes[j];
-        values_out[j] = L[nodes[j]];
+        values_out[j] = L[nodes[j]].value;
     }
     self->normalisation_factor[site] = normalisation_factor;
     self->num_values[site] = (tsk_size_t) num_values;
@@ -555,7 +556,7 @@ tsls_index_free(tsls_index_t *self)
 static inline bool
 tsls_hmm_in_tree(const tsls_hmm_t *self, tsk_id_t u)
 {
-    return self->parent[u] != NULL_NODE || self->left_child[u] != NULL_NODE;
+    return self->tree[u].parent != NULL_NODE || self->left_child[u] != NULL_NODE;
 }
 
 static void
@@ -567,24 +568,24 @@ tsls_hmm_check_state(const tsls_hmm_t *self)
 
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = self->likelihood_nodes[j];
-        assert(self->likelihood[u] >= 0);
+        assert(self->likelihood[u].value >= 0);
     }
     for (u = 0; u < (tsk_id_t) self->num_nodes; u++) {
-        if (self->likelihood[u] >= 0) {
+        if (self->likelihood[u].value >= 0) {
             num_likelihoods++;
         }
         if (tsls_hmm_in_tree(self, u)) {
-            assert(self->likelihood[u] != NOT_IN_TREE);
-            if (self->parent[u] == NULL_NODE) {
+            assert(self->likelihood[u].value != NOT_IN_TREE);
+            if (self->tree[u].parent == NULL_NODE) {
                 /* Roots always have a likelihood */
-                assert(self->likelihood[u] >= 0);
+                assert(self->likelihood[u].value >= 0);
             }
         } else {
-            assert(self->likelihood[u] == NOT_IN_TREE);
+            assert(self->likelihood[u].value == NOT_IN_TREE);
         }
-        assert(self->allelic_state[u]
-               == (self->parent[u] == NULL_NODE ? ROOT_ALLELE : TSK_NULL));
-        assert(self->likelihood_cache[u] == CACHE_UNSET);
+        assert(self->tree[u].allelic_state
+               == (self->tree[u].parent == NULL_NODE ? ROOT_ALLELE : TSK_NULL));
+        assert(self->likelihood[u].cache == CACHE_UNSET);
     }
     assert(num_likelihoods == self->num_likelihood_nodes);
     (void) num_likelihoods;
@@ -606,14 +607,14 @@ tsls_hmm_print_state(tsls_hmm_t *self, FILE *out)
     fprintf(out, "tree = \n");
     fprintf(out, "id\tparent\tlchild\trchild\tlsib\trsib\tlikelihood\n");
     for (j = 0; j < (int) self->num_nodes; j++) {
-        fprintf(out, "%d\t%d\t%d\t%d\t%d\t%d\t%f\n", (int) j, self->parent[j],
+        fprintf(out, "%d\t%d\t%d\t%d\t%d\t%d\t%f\n", (int) j, self->tree[j].parent,
             self->left_child[j], self->right_child[j], self->left_sib[j],
-            self->right_sib[j], self->likelihood[j]);
+            self->right_sib[j], self->likelihood[j].value);
     }
     fprintf(out, "likelihood nodes\n");
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = self->likelihood_nodes[j];
-        fprintf(out, "\t%d -> %f\n", u, self->likelihood[u]);
+        fprintf(out, "\t%d -> %f\n", u, self->likelihood[u].value);
     }
     fprintf(out, "traceback\n");
     for (j = 0; j < (int) self->num_sites; j++) {
@@ -652,34 +653,26 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     self->traceback = calloc(self->num_sites + 1, sizeof(node_state_list_t));
     self->max_likelihood_node = malloc((self->num_sites + 1) * sizeof(tsk_id_t));
 
-    self->parent = tsls_large_alloc((N + 1) * sizeof(*self->parent));
+    self->tree = tsls_large_alloc((N + 1) * sizeof(*self->tree));
+    self->likelihood = tsls_large_alloc((N + 1) * sizeof(*self->likelihood));
     self->left_child = tsls_large_alloc((N + 1) * sizeof(*self->left_child));
     self->right_child = tsls_large_alloc((N + 1) * sizeof(*self->right_child));
     self->left_sib = tsls_large_alloc((N + 1) * sizeof(*self->left_sib));
     self->right_sib = tsls_large_alloc((N + 1) * sizeof(*self->right_sib));
     self->num_below = tsls_large_alloc((N + 1) * sizeof(*self->num_below));
     self->num_inheriting = tsls_large_alloc((N + 1) * sizeof(*self->num_inheriting));
-    self->likelihood = tsls_large_alloc((N + 1) * sizeof(*self->likelihood));
-    self->allelic_state = tsls_large_alloc((N + 1) * sizeof(*self->allelic_state));
-    self->recombination_required
-        = tsls_large_alloc((N + 1) * sizeof(*self->recombination_required));
-    self->likelihood_cache = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_cache));
-    self->recombination_required_cache
-        = tsls_large_alloc((N + 1) * sizeof(*self->recombination_required_cache));
     self->likelihood_nodes = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_nodes));
     self->likelihood_nodes_tmp = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_nodes_tmp));
     self->values_tmp = tsls_large_alloc((N + 1) * sizeof(*self->values_tmp));
 
     if (self->recombination_rate == NULL
         || self->mismatch_rate == NULL || self->traceback == NULL
-        || self->max_likelihood_node == NULL || self->parent == NULL
+        || self->max_likelihood_node == NULL || self->tree == NULL
+        || self->likelihood == NULL
         || self->left_child == NULL || self->right_child == NULL
         || self->left_sib == NULL || self->right_sib == NULL || self->num_below == NULL
-        || self->num_inheriting == NULL || self->recombination_required == NULL
-        || self->likelihood == NULL || self->likelihood_cache == NULL
-        || self->recombination_required_cache == NULL
-        || self->likelihood_nodes == NULL || self->likelihood_nodes_tmp == NULL
-        || self->values_tmp == NULL || self->allelic_state == NULL) {
+        || self->num_inheriting == NULL || self->likelihood_nodes == NULL
+        || self->likelihood_nodes_tmp == NULL || self->values_tmp == NULL) {
         ret = TSLS_ERR_NO_MEMORY;
         goto out;
     }
@@ -699,7 +692,6 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
         self->num_sites * sizeof(*self->recombination_rate));
     memcpy(self->mismatch_rate, mismatch_rate,
         self->num_sites * sizeof(*self->mismatch_rate));
-    memset(self->allelic_state, 0xff, N * sizeof(*self->allelic_state));
     memset(self->max_likelihood_node, 0xff, self->num_sites * sizeof(tsk_id_t));
 out:
     return ret;
@@ -710,21 +702,17 @@ tsls_hmm_free(tsls_hmm_t *self)
 {
     tsi_safe_free(self->recombination_rate);
     tsi_safe_free(self->mismatch_rate);
-    tsls_large_free_array(self->parent, self->num_nodes);
+    tsls_large_free_array(self->tree, self->num_nodes);
+    tsls_large_free_array(self->likelihood, self->num_nodes);
     tsls_large_free_array(self->left_child, self->num_nodes);
     tsls_large_free_array(self->right_child, self->num_nodes);
     tsls_large_free_array(self->left_sib, self->num_nodes);
     tsls_large_free_array(self->right_sib, self->num_nodes);
     tsls_large_free_array(self->num_below, self->num_nodes);
     tsls_large_free_array(self->num_inheriting, self->num_nodes);
-    tsls_large_free_array(self->recombination_required, self->num_nodes);
-    tsls_large_free_array(self->likelihood, self->num_nodes);
-    tsls_large_free_array(self->likelihood_cache, self->num_nodes);
-    tsls_large_free_array(self->recombination_required_cache, self->num_nodes);
     tsls_large_free_array(self->likelihood_nodes, self->num_nodes);
     tsls_large_free_array(self->likelihood_nodes_tmp, self->num_nodes);
     tsls_large_free_array(self->values_tmp, self->num_nodes);
-    tsls_large_free_array(self->allelic_state, self->num_nodes);
     tsi_safe_free(self->max_likelihood_node);
     tsi_safe_free(self->traceback);
     tsi_blkalloc_free(&self->traceback_allocator);
@@ -773,7 +761,7 @@ tsls_hmm_sort_values(tsls_hmm_t *self)
     int j;
 
     for (j = 0; j < self->num_likelihood_nodes; j++) {
-        self->values_tmp[j] = self->likelihood[self->likelihood_nodes[j]];
+        self->values_tmp[j] = self->likelihood[self->likelihood_nodes[j]].value;
     }
     qsort(self->values_tmp, (size_t) self->num_likelihood_nodes, sizeof(double),
         cmp_double);
@@ -784,7 +772,7 @@ tsls_hmm_sort_values(tsls_hmm_t *self)
 static void
 tsls_hmm_prune(tsls_hmm_t *self)
 {
-    double *restrict L = self->likelihood;
+    tsls_likelihood_t *restrict L = self->likelihood;
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
     const int num_likelihood_nodes = self->num_likelihood_nodes;
     double max_L, cutoff;
@@ -796,7 +784,7 @@ tsls_hmm_prune(tsls_hmm_t *self)
     if (self->pruning_mode == TSLS_PRUNE_RELATIVE) {
         max_L = 0;
         for (j = 0; j < num_likelihood_nodes; j++) {
-            max_L = TSK_MAX(max_L, L[L_nodes[j]]);
+            max_L = TSK_MAX(max_L, L[L_nodes[j]].value);
         }
         cutoff = self->pruning_parameter * max_L;
     } else {
@@ -809,8 +797,8 @@ tsls_hmm_prune(tsls_hmm_t *self)
         cutoff = self->values_tmp[num_likelihood_nodes - n];
     }
     for (j = 0; j < num_likelihood_nodes; j++) {
-        if (L[L_nodes[j]] < cutoff) {
-            L[L_nodes[j]] = self->likelihood_threshold;
+        if (L[L_nodes[j]].value < cutoff) {
+            L[L_nodes[j]].value = self->likelihood_threshold;
         }
     }
 }
@@ -838,7 +826,7 @@ tsls_hmm_count_distinct(tsls_hmm_t *self)
 static inline void
 tsls_hmm_add_likelihood(tsls_hmm_t *self, tsk_id_t u, double value)
 {
-    self->likelihood[u] = value;
+    self->likelihood[u].value = value;
     self->likelihood_nodes[self->num_likelihood_nodes] = u;
     self->num_likelihood_nodes++;
 }
@@ -848,14 +836,14 @@ tsls_hmm_add_likelihood(tsls_hmm_t *self, tsk_id_t u, double value)
 static void
 tsls_hmm_remove_left_nodes(tsls_hmm_t *self)
 {
+    tsls_likelihood_t *restrict L = self->likelihood;
     int j, k;
     tsk_id_t *restrict L_nodes = self->likelihood_nodes;
-    const double *restrict L = self->likelihood;
 
     k = 0;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         L_nodes[k] = L_nodes[j];
-        if (L[L_nodes[j]] != NOT_IN_TREE) {
+        if (L[L_nodes[j]].value != NOT_IN_TREE) {
             k++;
         }
     }
@@ -865,10 +853,10 @@ tsls_hmm_remove_left_nodes(tsls_hmm_t *self)
 static inline void
 tsls_hmm_update_num_below(tsls_hmm_t *self, tsk_id_t u, int64_t delta)
 {
-    const tsk_id_t *restrict parent = self->parent;
+    tsls_node_t *restrict tree = self->tree;
     int64_t *restrict num_below = self->num_below;
 
-    for (; u != NULL_NODE; u = parent[u]) {
+    for (; u != NULL_NODE; u = tree[u].parent) {
         num_below[u] += delta;
     }
 }
@@ -881,24 +869,23 @@ tsls_hmm_update_num_below(tsls_hmm_t *self, tsk_id_t u, int64_t delta)
 static inline double
 tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
 {
-    const double *restrict L = self->likelihood;
-    double *restrict L_cache = self->likelihood_cache;
-    const tsk_id_t *restrict parent = self->parent;
+    tsls_likelihood_t *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
     double value;
     tsk_id_t v;
 
     v = u;
-    while (likely(L[v] == NULL_LIKELIHOOD) && likely(L_cache[v] == CACHE_UNSET)) {
-        v = parent[v];
+    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(L[v].cache == CACHE_UNSET)) {
+        v = tree[v].parent;
     }
-    value = L_cache[v];
+    value = L[v].cache;
     if (unlikely(value == CACHE_UNSET)) {
-        value = L[v];
+        value = L[v].value;
     }
     v = u;
-    while (likely(L[v] == NULL_LIKELIHOOD) && likely(L_cache[v] == CACHE_UNSET)) {
-        L_cache[v] = value;
-        v = parent[v];
+    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(L[v].cache == CACHE_UNSET)) {
+        L[v].cache = value;
+        v = tree[v].parent;
     }
     return value;
 }
@@ -909,12 +896,12 @@ tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
 static inline void
 tsls_hmm_reset_likelihood_cache(tsls_hmm_t *self, tsk_id_t u)
 {
-    double *restrict L_cache = self->likelihood_cache;
-    const tsk_id_t *restrict parent = self->parent;
+    tsls_likelihood_t *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
 
-    while (L_cache[u] != CACHE_UNSET) {
-        L_cache[u] = CACHE_UNSET;
-        u = parent[u];
+    while (L[u].cache != CACHE_UNSET) {
+        L[u].cache = CACHE_UNSET;
+        u = tree[u].parent;
     }
 }
 
@@ -927,23 +914,23 @@ static inline void
 tsls_hmm_remove_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c,
     bool update_likelihoods, tsk_id_t *restrict isolated, int *num_isolated)
 {
-    double *restrict L = self->likelihood;
+    tsls_likelihood_t *restrict L = self->likelihood;
 
     if (self->track_num_below) {
         tsls_hmm_update_num_below(self, p, -self->num_below[c]);
     }
-    if (update_likelihoods && L[c] == NULL_LIKELIHOOD) {
+    if (update_likelihoods && L[c].value == NULL_LIKELIHOOD) {
         tsls_hmm_add_likelihood(self, c, tsls_hmm_get_inherited_likelihood(self, p));
     }
-    remove_edge(p, c, self->parent, self->left_child, self->right_child,
+    remove_edge(p, c, self->tree, self->left_child, self->right_child,
         self->left_sib, self->right_sib);
-    self->allelic_state[c] = ROOT_ALLELE;
+    self->tree[c].allelic_state = ROOT_ALLELE;
     /* c is now a root, and so has a likelihood. Its cached value (if any,
      * from an earlier removal at this position) is the same as its
      * likelihood, and clearing it means that no root has a cached value,
      * so walks over the cache always stop below a root (see
      * tsls_hmm_reset_likelihood_cache). */
-    self->likelihood_cache[c] = CACHE_UNSET;
+    self->likelihood[c].cache = CACHE_UNSET;
     if (update_likelihoods) {
         /* Each node can only become isolated once when removing edges, so
          * the isolated list has at most num_nodes entries. */
@@ -953,7 +940,7 @@ tsls_hmm_remove_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c,
         }
         if (!tsls_hmm_in_tree(self, p)) {
             /* p was a root, and so has a likelihood */
-            assert(L[p] >= 0);
+            assert(L[p].value >= 0);
             isolated[*num_isolated] = p;
             (*num_isolated)++;
         }
@@ -965,21 +952,21 @@ tsls_hmm_remove_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c,
 static inline void
 tsls_hmm_insert_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c, bool update_likelihoods)
 {
-    double *restrict L = self->likelihood;
+    tsls_likelihood_t *restrict L = self->likelihood;
 
     if (update_likelihoods) {
-        if (L[p] == NOT_IN_TREE) {
+        if (L[p].value == NOT_IN_TREE) {
             tsls_hmm_add_likelihood(self, p, 0);
         }
-        if (L[c] == NOT_IN_TREE) {
+        if (L[c].value == NOT_IN_TREE) {
             tsls_hmm_add_likelihood(self, c, 0);
         }
         /* Otherwise the child was a root and keeps its likelihood */
-        assert(L[c] >= 0);
+        assert(L[c].value >= 0);
     }
-    insert_edge(p, c, self->parent, self->left_child, self->right_child,
+    insert_edge(p, c, self->tree, self->left_child, self->right_child,
         self->left_sib, self->right_sib);
-    self->allelic_state[c] = TSK_NULL;
+    self->tree[c].allelic_state = TSK_NULL;
     if (self->track_num_below) {
         tsls_hmm_update_num_below(self, p, self->num_below[c]);
     }
@@ -990,11 +977,11 @@ tsls_hmm_insert_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c, bool update_likel
 static void
 tsls_hmm_update_tree(tsls_hmm_t *self, const tsk_tree_position_t *tp)
 {
+    tsls_likelihood_t *restrict L = self->likelihood;
     const tsls_edge_t *restrict out = tsls_index_get_edges(self->index, tp->out.order);
     const tsls_edge_t *restrict in = tsls_index_get_edges(self->index, tp->in.order);
     const int direction = tp->direction;
     tsk_id_t *restrict isolated = self->likelihood_nodes_tmp;
-    double *restrict L = self->likelihood;
     tsk_id_t j, u;
     int k, num_left, num_isolated = 0;
 
@@ -1016,7 +1003,7 @@ tsls_hmm_update_tree(tsls_hmm_t *self, const tsk_tree_position_t *tp)
     for (k = 0; k < num_isolated; k++) {
         u = isolated[k];
         if (!tsls_hmm_in_tree(self, u)) {
-            L[u] = NOT_IN_TREE;
+            L[u].value = NOT_IN_TREE;
             num_left++;
         }
     }
@@ -1038,16 +1025,17 @@ tsls_hmm_init_sweep(
     tsk_id_t u, j;
     size_t k;
 
-    memset(self->parent, 0xff, N * sizeof(*self->parent));
     memset(self->left_child, 0xff, N * sizeof(*self->left_child));
     memset(self->right_child, 0xff, N * sizeof(*self->right_child));
     memset(self->left_sib, 0xff, N * sizeof(*self->left_sib));
     memset(self->right_sib, 0xff, N * sizeof(*self->right_sib));
-    memset(self->recombination_required, 0xff, N * sizeof(*self->recombination_required));
-    /* Every node starts as a root (ROOT_ALLELE is 0xfe as an int8) */
-    memset(self->allelic_state, (uint8_t) ROOT_ALLELE, N * sizeof(*self->allelic_state));
     for (k = 0; k < N; k++) {
-        self->likelihood_cache[k] = CACHE_UNSET;
+        /* Every node starts as a root. The likelihoods are set below. */
+        self->likelihood[k].cache = CACHE_UNSET;
+        self->tree[k].parent = NULL_NODE;
+        self->tree[k].allelic_state = ROOT_ALLELE;
+        self->tree[k].recombination_required = -1;
+        self->tree[k].recombination_required_cache = -1;
         self->num_below[k] = 1;
     }
     ret = seek_tree_position(tp, position);
@@ -1062,12 +1050,12 @@ tsls_hmm_init_sweep(
     }
     self->num_likelihood_nodes = 0;
     for (u = 0; u < (tsk_id_t) N; u++) {
-        if (self->parent[u] != NULL_NODE) {
-            self->likelihood[u] = NULL_LIKELIHOOD;
+        if (self->tree[u].parent != NULL_NODE) {
+            self->likelihood[u].value = NULL_LIKELIHOOD;
         } else if (self->left_child[u] != NULL_NODE) {
             tsls_hmm_add_likelihood(self, u, initial_value);
         } else {
-            self->likelihood[u] = NOT_IN_TREE;
+            self->likelihood[u].value = NOT_IN_TREE;
         }
     }
 out:
@@ -1084,7 +1072,7 @@ tsls_hmm_set_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
     tsk_size_t j;
 
     for (j = index->site_mutations_offset[site]; j < stop; j++) {
-        self->allelic_state[node[j]] = derived_state[j];
+        self->tree[node[j]].allelic_state = derived_state[j];
     }
 }
 
@@ -1101,7 +1089,7 @@ tsls_hmm_unset_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 
     for (j = index->site_mutations_offset[site]; j < stop; j++) {
         u = node[j];
-        self->allelic_state[u] = self->parent[u] == NULL_NODE ? ROOT_ALLELE : TSK_NULL;
+        self->tree[u].allelic_state = self->tree[u].parent == NULL_NODE ? ROOT_ALLELE : TSK_NULL;
     }
 }
 
@@ -1116,7 +1104,7 @@ tsls_hmm_clear_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
     tsk_size_t j;
 
     for (j = index->site_mutations_offset[site]; j < stop; j++) {
-        self->allelic_state[node[j]] = TSK_NULL;
+        self->tree[node[j]].allelic_state = TSK_NULL;
     }
 }
 
@@ -1125,8 +1113,8 @@ tsls_hmm_clear_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 static void
 tsls_hmm_insert_mutation_likelihoods(tsls_hmm_t *self, const tsk_id_t site)
 {
-    const double *restrict L = self->likelihood;
-    const tsk_id_t *restrict parent = self->parent;
+    tsls_likelihood_t *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
     const tsls_index_t *index = self->index;
     const tsk_size_t stop = index->site_mutations_offset[site + 1];
     tsk_size_t j;
@@ -1134,12 +1122,12 @@ tsls_hmm_insert_mutation_likelihoods(tsls_hmm_t *self, const tsk_id_t site)
 
     for (j = index->site_mutations_offset[site]; j < stop; j++) {
         node = index->mutation_node[j];
-        if (L[node] == NULL_LIKELIHOOD) {
+        if (L[node].value == NULL_LIKELIHOOD) {
             u = node;
-            while (L[u] == NULL_LIKELIHOOD) {
-                u = parent[u];
+            while (L[u].value == NULL_LIKELIHOOD) {
+                u = tree[u].parent;
             }
-            tsls_hmm_add_likelihood(self, node, L[u]);
+            tsls_hmm_add_likelihood(self, node, L[u].value);
         }
     }
 }
@@ -1151,31 +1139,28 @@ static ALWAYS_INLINE double
 tsls_hmm_get_inherited_likelihood_and_flag(
     tsls_hmm_t *self, tsk_id_t u, int8_t *flag)
 {
-    const double *restrict L = self->likelihood;
-    const int8_t *restrict R = self->recombination_required;
-    double *restrict L_cache = self->likelihood_cache;
-    int8_t *restrict R_cache = self->recombination_required_cache;
-    const tsk_id_t *restrict parent = self->parent;
+    tsls_likelihood_t *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
     double value;
     int8_t r;
     tsk_id_t v;
 
     v = u;
-    while (likely(L[v] == NULL_LIKELIHOOD) && likely(L_cache[v] == CACHE_UNSET)) {
-        v = parent[v];
+    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(L[v].cache == CACHE_UNSET)) {
+        v = tree[v].parent;
     }
-    if (L_cache[v] == CACHE_UNSET) {
-        value = L[v];
-        r = R[v];
+    if (L[v].cache == CACHE_UNSET) {
+        value = L[v].value;
+        r = tree[v].recombination_required;
     } else {
-        value = L_cache[v];
-        r = R_cache[v];
+        value = L[v].cache;
+        r = tree[v].recombination_required_cache;
     }
     v = u;
-    while (likely(L[v] == NULL_LIKELIHOOD) && likely(L_cache[v] == CACHE_UNSET)) {
-        L_cache[v] = value;
-        R_cache[v] = r;
-        v = parent[v];
+    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(L[v].cache == CACHE_UNSET)) {
+        L[v].cache = value;
+        tree[v].recombination_required_cache = r;
+        v = tree[v].parent;
     }
     *flag = r;
     return value;
@@ -1190,12 +1175,11 @@ static ALWAYS_INLINE void
 tsls_hmm_coalesce_likelihoods(
     tsls_hmm_t *self, bool check_recombination_required)
 {
-    const int8_t *restrict R = self->recombination_required;
+    tsls_likelihood_t *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
     double L_p;
     int8_t R_p;
     tsk_id_t u, p;
-    double *restrict L = self->likelihood;
-    const tsk_id_t *restrict parent = self->parent;
     tsk_id_t *restrict cached_paths = self->likelihood_nodes_tmp;
     const int old_num_likelihood_nodes = self->num_likelihood_nodes;
     tsk_id_t *restrict L_nodes = self->likelihood_nodes;
@@ -1205,7 +1189,7 @@ tsls_hmm_coalesce_likelihoods(
     num_likelihood_nodes = 0;
     for (j = 0; j < old_num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        p = parent[u];
+        p = tree[u].parent;
         if (p != NULL_NODE) {
             cached_paths[num_cached_paths] = p;
             num_cached_paths++;
@@ -1214,17 +1198,17 @@ tsls_hmm_coalesce_likelihoods(
                  * cached values below it stay valid. */
                 L_p = tsls_hmm_get_inherited_likelihood_and_flag(
                     self, p, &R_p);
-                if (L[u] == L_p && R[u] == R_p) {
-                    L[u] = NULL_LIKELIHOOD;
+                if (L[u].value == L_p && tree[u].recombination_required == R_p) {
+                    L[u].value = NULL_LIKELIHOOD;
                 }
             } else {
                 L_p = tsls_hmm_get_inherited_likelihood(self, p);
-                if (L[u] == L_p) {
-                    L[u] = NULL_LIKELIHOOD;
+                if (L[u].value == L_p) {
+                    L[u].value = NULL_LIKELIHOOD;
                 }
             }
         }
-        if (L[u] >= 0) {
+        if (L[u].value >= 0) {
             L_nodes[num_likelihood_nodes] = L_nodes[j];
             num_likelihood_nodes++;
         }
@@ -1270,8 +1254,8 @@ tsls_hmm_get_n(const tsls_hmm_t *self)
 static void
 tsls_hmm_compute_num_inheriting(tsls_hmm_t *self)
 {
-    const double *restrict L = self->likelihood;
-    const tsk_id_t *restrict parent = self->parent;
+    tsls_likelihood_t *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
     const int64_t *restrict num_below = self->num_below;
     int64_t *restrict num_inheriting = self->num_inheriting;
@@ -1284,10 +1268,10 @@ tsls_hmm_compute_num_inheriting(tsls_hmm_t *self)
     }
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        w = parent[u];
+        w = tree[u].parent;
         if (w != NULL_NODE) {
-            while (L[w] == NULL_LIKELIHOOD) {
-                w = parent[w];
+            while (L[w].value == NULL_LIKELIHOOD) {
+                w = tree[w].parent;
             }
             num_inheriting[w] -= num_below[u];
         }
@@ -1298,7 +1282,7 @@ tsls_hmm_compute_num_inheriting(tsls_hmm_t *self)
 static double
 tsls_hmm_total_likelihood(const tsls_hmm_t *self)
 {
-    const double *restrict L = self->likelihood;
+    tsls_likelihood_t *restrict L = self->likelihood;
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
     const int64_t *restrict num_inheriting = self->num_inheriting;
     double total = 0;
@@ -1308,7 +1292,7 @@ tsls_hmm_total_likelihood(const tsls_hmm_t *self)
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
         assert(num_inheriting[u] > 0);
-        total += (double) num_inheriting[u] * L[u];
+        total += (double) num_inheriting[u] * L[u].value;
     }
     return total;
 }
@@ -1325,7 +1309,7 @@ tsls_hmm_store_traceback(tsls_hmm_t *self, const tsk_id_t site_id)
     node_state_list_t *restrict list;
     node_state_list_t *restrict T = self->traceback;
     const tsk_id_t *restrict nodes = self->likelihood_nodes;
-    const int8_t *restrict R = self->recombination_required;
+    tsls_node_t *restrict tree = self->tree;
     const int num_likelihood_nodes = self->num_likelihood_nodes;
     bool match;
 
@@ -1339,7 +1323,7 @@ tsls_hmm_store_traceback(tsls_hmm_t *self, const tsk_id_t site_id)
             list_R = list->recombination_required;
             match = true;
             for (j = 0; j < num_likelihood_nodes; j++) {
-                if (list_node[j] != nodes[j] || list_R[j] != R[nodes[j]]) {
+                if (list_node[j] != nodes[j] || list_R[j] != tree[nodes[j]].recombination_required) {
                     match = false;
                     break;
                 }
@@ -1366,7 +1350,7 @@ tsls_hmm_store_traceback(tsls_hmm_t *self, const tsk_id_t site_id)
         for (j = 0; j < num_likelihood_nodes; j++) {
             u = nodes[j];
             list_node[j] = u;
-            list_R[j] = R[u];
+            list_R[j] = tree[u].recombination_required;
         }
     }
     self->total_traceback_size += (size_t) num_likelihood_nodes;
@@ -1378,13 +1362,11 @@ static int WARN_UNUSED
 tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     const allele_t state, compressed_matrix_t *output)
 {
+    tsls_likelihood_t *restrict L = self->likelihood;
     int ret = 0;
     const int num_likelihood_nodes = self->num_likelihood_nodes;
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
-    const tsk_id_t *restrict parent = self->parent;
-    const allele_t *restrict allelic_state = self->allelic_state;
-    double *restrict L = self->likelihood;
-    int8_t *restrict recombination_required = self->recombination_required;
+    tsls_node_t *restrict tree = self->tree;
     const double rho = self->recombination_rate[site];
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
@@ -1400,21 +1382,21 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     max_L_node = NULL_NODE;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        p_no_recomb = L[u] * (1 - rho + rho / n);
+        p_no_recomb = L[u].value * (1 - rho + rho / n);
         p_recomb = rho / n;
-        recombination_required[u] = false;
+        tree[u].recombination_required = false;
         if (p_no_recomb > p_recomb) {
             p_t = p_no_recomb;
         } else {
             p_t = p_recomb;
-            recombination_required[u] = true;
+            tree[u].recombination_required = true;
         }
         p_e = emission_probability(
-            get_marked_allelic_state(allelic_state, parent, u, ancestral_state), state,
+            get_marked_allelic_state(tree, u, ancestral_state), state,
             mu, num_alleles);
-        L[u] = p_t * p_e;
-        if (L[u] > max_L) {
-            max_L = L[u];
+        L[u].value = p_t * p_e;
+        if (L[u].value > max_L) {
+            max_L = L[u].value;
             max_L_node = u;
         }
     }
@@ -1435,7 +1417,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     self->max_likelihood_node[site] = max_L_node;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        L[u] = TSK_MAX(L[u] / max_L, self->likelihood_threshold);
+        L[u].value = TSK_MAX(L[u].value / max_L, self->likelihood_threshold);
     }
     tsls_hmm_prune(self);
     tsls_hmm_count_distinct(self);
@@ -1448,8 +1430,8 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
         goto out;
     }
     if (output != NULL) {
-        ret = compressed_matrix_store_site(output, site, max_L,
-            self->num_likelihood_nodes, L_nodes, L, recombination_required);
+        ret = compressed_matrix_store_site(
+            output, site, max_L, self->num_likelihood_nodes, L_nodes, L, self->tree, true);
         if (ret != 0) {
             goto out;
         }
@@ -1466,11 +1448,10 @@ static int WARN_UNUSED
 tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
     const allele_t state, double *previous_total, compressed_matrix_t *output)
 {
+    tsls_likelihood_t *restrict L = self->likelihood;
     int ret = 0;
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
-    const tsk_id_t *restrict parent = self->parent;
-    const allele_t *restrict allelic_state = self->allelic_state;
-    double *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
     const double rho = self->recombination_rate[site];
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
@@ -1490,9 +1471,9 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
         p_e = emission_probability(
-            get_marked_allelic_state(allelic_state, parent, u, ancestral_state), state,
+            get_marked_allelic_state(tree, u, ancestral_state), state,
             mu, num_alleles);
-        L[u] = (L[u] * (1 - rho) + rho / n * total) * p_e;
+        L[u].value = (L[u].value * (1 - rho) + rho / n * total) * p_e;
     }
     tsls_hmm_unset_allelic_state(self, site);
     normalisation_factor = tsls_hmm_total_likelihood(self);
@@ -1502,12 +1483,12 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
     }
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        L[u] = TSK_MAX(L[u] / normalisation_factor, self->likelihood_threshold);
+        L[u].value = TSK_MAX(L[u].value / normalisation_factor, self->likelihood_threshold);
     }
     tsls_hmm_prune(self);
     *previous_total = tsls_hmm_total_likelihood(self);
     ret = compressed_matrix_store_site(output, site, normalisation_factor,
-        self->num_likelihood_nodes, L_nodes, L, NULL);
+        self->num_likelihood_nodes, L_nodes, L, self->tree, false);
     if (ret != 0) {
         goto out;
     }
@@ -1532,11 +1513,10 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
     const allele_t state, const double *forward_normalisation_factor,
     backward_transition_t *transition, compressed_matrix_t *output)
 {
+    tsls_likelihood_t *restrict L = self->likelihood;
     int ret = 0;
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
-    const tsk_id_t *restrict parent = self->parent;
-    const allele_t *restrict allelic_state = self->allelic_state;
-    double *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
     const double num_alleles = (double) self->index->num_alleles[site];
@@ -1548,15 +1528,15 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
     if (transition->pending) {
         for (j = 0; j < self->num_likelihood_nodes; j++) {
             u = L_nodes[j];
-            x = (1 - transition->rho) * L[u] + transition->rho * transition->total / n;
-            L[u] = TSK_MAX(
+            x = (1 - transition->rho) * L[u].value + transition->rho * transition->total / n;
+            L[u].value = TSK_MAX(
                 x / transition->normalisation_factor, self->likelihood_threshold);
         }
         tsls_hmm_prune(self);
     }
     tsls_hmm_insert_mutation_likelihoods(self, site);
     ret = compressed_matrix_store_site(output, site, forward_normalisation_factor[site],
-        self->num_likelihood_nodes, L_nodes, L, NULL);
+        self->num_likelihood_nodes, L_nodes, L, self->tree, false);
     if (ret != 0) {
         goto out;
     }
@@ -1564,8 +1544,8 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
     tsls_hmm_set_allelic_state(self, site);
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        L[u] *= emission_probability(
-            get_marked_allelic_state(allelic_state, parent, u, ancestral_state), state,
+        L[u].value *= emission_probability(
+            get_marked_allelic_state(tree, u, ancestral_state), state,
             mu, num_alleles);
     }
     tsls_hmm_unset_allelic_state(self, site);
@@ -1642,15 +1622,15 @@ out:
  */
 static inline void
 tsls_hmm_set_recombination_required(
-    tsls_hmm_t *self, tsk_id_t site, int8_t *restrict recombination_required)
+    tsls_hmm_t *self, tsk_id_t site, tsls_node_t *restrict tree)
 {
     int j;
-    const int8_t *restrict R = self->traceback[site].recombination_required;
-    const tsk_id_t *restrict node = self->traceback[site].node;
+    const int8_t *restrict list_R = self->traceback[site].recombination_required;
+    const tsk_id_t *restrict list_node = self->traceback[site].node;
     const int size = self->traceback[site].size;
 
     for (j = 0; j < size; j++) {
-        recombination_required[node[j]] = R[j];
+        tree[list_node[j]].recombination_required = list_R[j];
     }
 }
 
@@ -1658,14 +1638,14 @@ tsls_hmm_set_recombination_required(
  */
 static inline void
 tsls_hmm_unset_recombination_required(
-    tsls_hmm_t *self, tsk_id_t site, int8_t *restrict recombination_required)
+    tsls_hmm_t *self, tsk_id_t site, tsls_node_t *restrict tree)
 {
     int j;
-    const tsk_id_t *restrict node = self->traceback[site].node;
+    const tsk_id_t *restrict list_node = self->traceback[site].node;
     const int size = self->traceback[site].size;
 
     for (j = 0; j < size; j++) {
-        recombination_required[node[j]] = -1;
+        tree[list_node[j]].recombination_required = -1;
     }
 }
 
@@ -1681,9 +1661,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     tsk_id_t site, j, u, max_likelihood_node;
     double x;
     bool valid;
-    tsk_id_t *restrict parent = self->parent;
-    allele_t *restrict allelic_state = self->allelic_state;
-    int8_t *restrict recombination_required = self->recombination_required;
+    tsls_node_t *restrict tree = self->tree;
     const double *restrict sites_position = self->sites_position;
     /* Every root of the traceback tree has the virtual root as its parent,
      * whose allelic state is the site's ancestral state, so the walk to find
@@ -1708,12 +1686,11 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     /* Build the tree at the last site, and then go through the trees in
      * reverse, running the traceback at each site. */
     for (u = 0; u < virtual_root; u++) {
-        parent[u] = virtual_root;
+        tree[u].parent = virtual_root;
+        tree[u].allelic_state = TSK_NULL;
+        tree[u].recombination_required = -1;
     }
-    parent[virtual_root] = NULL_NODE;
-    memset(
-        recombination_required, 0xff, self->num_nodes * sizeof(*recombination_required));
-    memset(allelic_state, 0xff, self->num_nodes * sizeof(*allelic_state));
+    tree[virtual_root].parent = NULL_NODE;
     x = sites_position[end - 1];
     ret = seek_tree_position(&tp, x);
     if (ret != 0) {
@@ -1722,7 +1699,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     in = tsls_index_get_edges(self->index, tp.in.order);
     for (j = tp.in.start; j != tp.in.stop; j += tp.direction) {
         if (seek_edge_covers(&tp, &in[j], x)) {
-            parent[in[j].child] = in[j].parent;
+            tree[in[j].child].parent = in[j].parent;
         }
     }
     for (site = end - 1; site >= start; site--) {
@@ -1733,33 +1710,33 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
             out = tsls_index_get_edges(self->index, tp.out.order);
             in = tsls_index_get_edges(self->index, tp.in.order);
             for (j = tp.out.start; j != tp.out.stop; j--) {
-                parent[out[j].child] = virtual_root;
+                tree[out[j].child].parent = virtual_root;
             }
             for (j = tp.in.start; j != tp.in.stop; j--) {
-                parent[in[j].child] = in[j].parent;
+                tree[in[j].child].parent = in[j].parent;
             }
         }
-        allelic_state[virtual_root] = self->index->ancestral_state[site];
+        tree[virtual_root].allelic_state = self->index->ancestral_state[site];
         tsls_hmm_set_allelic_state(self, site);
         u = path_parent[path_length];
-        while (allelic_state[u] == TSK_NULL) {
-            u = parent[u];
+        while (tree[u].allelic_state == TSK_NULL) {
+            u = tree[u].parent;
         }
-        match[site] = allelic_state[u];
+        match[site] = tree[u].allelic_state;
         tsls_hmm_clear_allelic_state(self, site);
         u = path_parent[path_length];
 
         /* Mark the traceback nodes on the tree */
-        tsls_hmm_set_recombination_required(self, site, recombination_required);
+        tsls_hmm_set_recombination_required(self, site, tree);
 
         /* Traverse up the tree from the current node. The first marked
          * node that we meet tells us whether we need to recombine. Every
          * root has a likelihood, and so is marked. */
-        while (recombination_required[u] == -1) {
-            u = parent[u];
+        while (tree[u].recombination_required == -1) {
+            u = tree[u].parent;
             assert(u != virtual_root);
         }
-        if (recombination_required[u] && site > start) {
+        if (tree[u].recombination_required && site > start) {
             max_likelihood_node = self->max_likelihood_node[site - 1];
             assert(max_likelihood_node != NULL_NODE);
             path_left[path_length] = sites_position[site];
@@ -1769,7 +1746,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
             path_parent[path_length] = max_likelihood_node;
         }
         /* Unset the values in the tree for the next site. */
-        tsls_hmm_unset_recombination_required(self, site, recombination_required);
+        tsls_hmm_unset_recombination_required(self, site, tree);
     }
     path_left[path_length] = start_pos;
     path_length++;
@@ -1842,7 +1819,6 @@ out:
         memset(self->max_likelihood_node + start, 0xff,
             (size_t) (end - start) * sizeof(*self->max_likelihood_node));
     }
-    memset(self->allelic_state, 0xff, self->num_nodes * sizeof(*self->allelic_state));
     return ret;
 }
 
@@ -1870,7 +1846,6 @@ tsls_hmm_forward(
             haplotype, NULL, output);
     }
 out:
-    memset(self->allelic_state, 0xff, self->num_nodes * sizeof(*self->allelic_state));
     return ret;
 }
 
@@ -1896,7 +1871,6 @@ tsls_hmm_backward(tsls_hmm_t *self, const allele_t *haplotype,
             haplotype, forward_normalisation_factor, output);
     }
 out:
-    memset(self->allelic_state, 0xff, self->num_nodes * sizeof(*self->allelic_state));
     return ret;
 }
 
