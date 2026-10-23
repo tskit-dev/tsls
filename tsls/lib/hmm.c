@@ -684,7 +684,7 @@ tsls_hmm_update_num_below(tsls_hmm_t *self, tsk_id_t u, int64_t delta)
  * tree here and in tsls_hmm_get_inherited_likelihood_and_flag are inner
  * loops, so they have no asserts (every root has a likelihood, which
  * tsls_hmm_check_state checks). */
-static double
+static inline double
 tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
 {
     const double *restrict L = self->likelihood;
@@ -710,7 +710,7 @@ tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
     return value;
 }
 
-static void
+static inline void
 tsls_hmm_reset_likelihood_cache(tsls_hmm_t *self, tsk_id_t u)
 {
     double *restrict L_cache = self->likelihood_cache;
@@ -727,7 +727,7 @@ tsls_hmm_reset_likelihood_cache(tsls_hmm_t *self, tsk_id_t u)
  * isolated after removing the edge are added to the isolated list; they
  * only leave the tree if they are still isolated after all the edges at
  * this position have been inserted (see tsls_hmm_update_tree). */
-static void
+static inline void
 tsls_hmm_remove_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c,
     bool update_likelihoods, tsk_id_t *restrict isolated, int *num_isolated)
 {
@@ -759,7 +759,7 @@ tsls_hmm_remove_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c,
 
 /* Insert the edge from p to c into the tree. Nodes entering the tree get
  * likelihood 0, and so can only be reached by recombination. */
-static void
+static inline void
 tsls_hmm_insert_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c, bool update_likelihoods)
 {
     double *restrict L = self->likelihood;
