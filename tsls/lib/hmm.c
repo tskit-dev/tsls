@@ -95,19 +95,27 @@ get_allelic_state(const allele_t *restrict allelic_state,
     return allelic_state[u];
 }
 
-/* As get_allelic_state, but for a tree in which every root has its
- * allelic state set (see tsls_hmm_set_root_allelic_state), so the walk up
- * the tree doesn't need to check for the root. This is the innermost loop
- * of the HMM, so there is deliberately no assert here (the Python module is
- * compiled with asserts on); the roots are checked in tsls_hmm_check_state. */
+/* During the forward and backward sweeps, the allelic state of every node
+ * without a parent is ROOT_ALLELE, unless it has a mutation at the current
+ * site. insert_edge and remove_edge keep this up to date. */
+#define ROOT_ALLELE (-2)
+
+/* As get_allelic_state, but for a tree in which the roots are marked with
+ * ROOT_ALLELE, so the walk up the tree doesn't need to check for the root.
+ * This is the innermost loop of the HMM, so there is deliberately no assert
+ * here (the Python module is compiled with asserts on); the marks are
+ * checked in tsls_hmm_check_state. */
 static inline allele_t
-get_marked_allelic_state(
-    const allele_t *restrict allelic_state, const tsk_id_t *restrict parent, tsk_id_t u)
+get_marked_allelic_state(const allele_t *restrict allelic_state,
+    const tsk_id_t *restrict parent, tsk_id_t u, allele_t ancestral_state)
 {
+    allele_t state;
+
     while (allelic_state[u] == TSK_NULL) {
         u = parent[u];
     }
-    return allelic_state[u];
+    state = allelic_state[u];
+    return likely(state != ROOT_ALLELE) ? state : ancestral_state;
 }
 
 /* Position the specified null tree position at the tree containing x,
@@ -279,7 +287,8 @@ tsls_hmm_check_state(const tsls_hmm_t *self)
         } else {
             assert(self->likelihood[u] == NOT_IN_TREE);
         }
-        assert(self->allelic_state[u] == TSK_NULL);
+        assert(self->allelic_state[u]
+               == (self->parent[u] == NULL_NODE ? ROOT_ALLELE : TSK_NULL));
         assert(self->likelihood_cache[u] == CACHE_UNSET);
     }
     assert(num_likelihoods == self->num_likelihood_nodes);
@@ -741,6 +750,7 @@ tsls_hmm_remove_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c,
     }
     remove_edge(p, c, self->parent, self->left_child, self->right_child,
         self->left_sib, self->right_sib);
+    self->allelic_state[c] = ROOT_ALLELE;
     if (update_likelihoods) {
         /* Each node can only become isolated once when removing edges, so
          * the isolated list has at most num_nodes entries. */
@@ -776,6 +786,7 @@ tsls_hmm_insert_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c, bool update_likel
     }
     insert_edge(p, c, self->parent, self->left_child, self->right_child,
         self->left_sib, self->right_sib);
+    self->allelic_state[c] = TSK_NULL;
     if (self->track_num_below) {
         tsls_hmm_update_num_below(self, p, self->num_below[c]);
     }
@@ -839,6 +850,8 @@ tsls_hmm_init_sweep(
     memset(self->left_sib, 0xff, N * sizeof(*self->left_sib));
     memset(self->right_sib, 0xff, N * sizeof(*self->right_sib));
     memset(self->recombination_required, 0xff, N * sizeof(*self->recombination_required));
+    /* Every node starts as a root (ROOT_ALLELE is 0xfe as an int8) */
+    memset(self->allelic_state, (uint8_t) ROOT_ALLELE, N * sizeof(*self->allelic_state));
     for (k = 0; k < N; k++) {
         self->likelihood_cache[k] = CACHE_UNSET;
         self->num_below[k] = 1;
@@ -879,8 +892,26 @@ tsls_hmm_set_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
     }
 }
 
+/* Unset the allelic states set for the site's mutations, keeping the
+ * roots marked with ROOT_ALLELE (during the sweeps). */
 static inline void
 tsls_hmm_unset_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
+{
+    const tsk_mutation_t *restrict mutations = self->tree_sequence->site_mutations[site];
+    const tsk_size_t num_mutations = self->tree_sequence->site_mutations_length[site];
+    tsk_size_t j;
+    tsk_id_t u;
+
+    for (j = 0; j < num_mutations; j++) {
+        u = mutations[j].node;
+        self->allelic_state[u] = self->parent[u] == NULL_NODE ? ROOT_ALLELE : TSK_NULL;
+    }
+}
+
+/* As tsls_hmm_unset_allelic_state, for the traceback, which doesn't mark
+ * the roots. */
+static inline void
+tsls_hmm_clear_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 {
     const tsk_mutation_t *restrict mutations = self->tree_sequence->site_mutations[site];
     const tsk_size_t num_mutations = self->tree_sequence->site_mutations_length[site];
@@ -888,47 +919,6 @@ tsls_hmm_unset_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
 
     for (j = 0; j < num_mutations; j++) {
         self->allelic_state[mutations[j].node] = TSK_NULL;
-    }
-}
-
-/* Set the allelic state of every root to the ancestral state, so that
- * get_marked_allelic_state finds a state for every node in the tree.
- * Every root has a likelihood, so the roots are found in the likelihood
- * list. This must be called before tsls_hmm_set_allelic_state, so that
- * mutations above a root take precedence, and the likelihood list must not
- * change before tsls_hmm_unset_root_allelic_state. */
-static inline void
-tsls_hmm_set_root_allelic_state(tsls_hmm_t *self, const tsk_id_t site)
-{
-    const allele_t ancestral_state = self->ancestral_state[site];
-    const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
-    const tsk_id_t *restrict parent = self->parent;
-    allele_t *restrict allelic_state = self->allelic_state;
-    tsk_id_t u;
-    int j;
-
-    for (j = 0; j < self->num_likelihood_nodes; j++) {
-        u = L_nodes[j];
-        if (parent[u] == NULL_NODE) {
-            allelic_state[u] = ancestral_state;
-        }
-    }
-}
-
-static inline void
-tsls_hmm_unset_root_allelic_state(tsls_hmm_t *self)
-{
-    const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
-    const tsk_id_t *restrict parent = self->parent;
-    allele_t *restrict allelic_state = self->allelic_state;
-    tsk_id_t u;
-    int j;
-
-    for (j = 0; j < self->num_likelihood_nodes; j++) {
-        u = L_nodes[j];
-        if (parent[u] == NULL_NODE) {
-            allelic_state[u] = TSK_NULL;
-        }
     }
 }
 
@@ -1202,12 +1192,12 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
     const double num_alleles = (double) self->num_alleles[site];
+    const allele_t ancestral_state = self->ancestral_state[site];
     double max_L, p_no_recomb, p_recomb, p_t, p_e;
     tsk_id_t u, max_L_node;
     int j;
 
     tsls_hmm_insert_mutation_likelihoods(self, site);
-    tsls_hmm_set_root_allelic_state(self, site);
     tsls_hmm_set_allelic_state(self, site);
     max_L = -1;
     max_L_node = NULL_NODE;
@@ -1223,7 +1213,8 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
             recombination_required[u] = true;
         }
         p_e = emission_probability(
-            get_marked_allelic_state(allelic_state, parent, u), state, mu, num_alleles);
+            get_marked_allelic_state(allelic_state, parent, u, ancestral_state), state,
+            mu, num_alleles);
         L[u] = p_t * p_e;
         if (L[u] > max_L) {
             max_L = L[u];
@@ -1231,7 +1222,6 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
         }
     }
     tsls_hmm_unset_allelic_state(self, site);
-    tsls_hmm_unset_root_allelic_state(self);
     (void) num_likelihood_nodes;
 
     if (max_L <= 0) {
@@ -1288,6 +1278,7 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
     const double num_alleles = (double) self->num_alleles[site];
+    const allele_t ancestral_state = self->ancestral_state[site];
     double total, normalisation_factor, p_e;
     tsk_id_t u;
     int j;
@@ -1298,16 +1289,15 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
     if (total < 0) {
         total = tsls_hmm_total_likelihood(self);
     }
-    tsls_hmm_set_root_allelic_state(self, site);
     tsls_hmm_set_allelic_state(self, site);
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
         p_e = emission_probability(
-            get_marked_allelic_state(allelic_state, parent, u), state, mu, num_alleles);
+            get_marked_allelic_state(allelic_state, parent, u, ancestral_state), state,
+            mu, num_alleles);
         L[u] = (L[u] * (1 - rho) + rho / n * total) * p_e;
     }
     tsls_hmm_unset_allelic_state(self, site);
-    tsls_hmm_unset_root_allelic_state(self);
     normalisation_factor = tsls_hmm_total_likelihood(self);
     if (!(normalisation_factor > 0)) {
         ret = TSLS_ERR_MATCH_IMPOSSIBLE;
@@ -1353,6 +1343,7 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
     const double mu = self->mismatch_rate[site];
     const double n = tsls_hmm_get_n(self);
     const double num_alleles = (double) self->num_alleles[site];
+    const allele_t ancestral_state = self->ancestral_state[site];
     double x;
     tsk_id_t u;
     int j;
@@ -1373,15 +1364,14 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
         goto out;
     }
     tsls_hmm_compute_num_inheriting(self);
-    tsls_hmm_set_root_allelic_state(self, site);
     tsls_hmm_set_allelic_state(self, site);
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
         L[u] *= emission_probability(
-            get_marked_allelic_state(allelic_state, parent, u), state, mu, num_alleles);
+            get_marked_allelic_state(allelic_state, parent, u, ancestral_state), state,
+            mu, num_alleles);
     }
     tsls_hmm_unset_allelic_state(self, site);
-    tsls_hmm_unset_root_allelic_state(self);
     transition->pending = true;
     transition->total = tsls_hmm_total_likelihood(self);
     transition->rho = self->recombination_rate[site];
@@ -1522,6 +1512,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     memset(parent, 0xff, self->num_nodes * sizeof(*parent));
     memset(
         recombination_required, 0xff, self->num_nodes * sizeof(*recombination_required));
+    memset(self->allelic_state, 0xff, self->num_nodes * sizeof(*self->allelic_state));
     x = sites_position[end - 1];
     ret = seek_tree_position(&tp, x);
     if (ret != 0) {
@@ -1550,7 +1541,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
         u = path_parent[path_length];
         match[site]
             = get_allelic_state(allelic_state, parent, u, self->ancestral_state[site]);
-        tsls_hmm_unset_allelic_state(self, site);
+        tsls_hmm_clear_allelic_state(self, site);
 
         /* Mark the traceback nodes on the tree */
         tsls_hmm_set_recombination_required(self, site, recombination_required);
