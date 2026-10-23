@@ -89,31 +89,17 @@ insert_edge(tsk_id_t p, tsk_id_t c, tsk_id_t *restrict parent,
     right_child[p] = c;
 }
 
-/* Returns the allelic state of node u, given the allelic_state array in
- * which the nodes with mutations at the current site are set. */
-static inline allele_t
-get_allelic_state(const allele_t *restrict allelic_state,
-    const tsk_id_t *restrict parent, tsk_id_t u, allele_t ancestral_state)
-{
-    while (allelic_state[u] == TSK_NULL) {
-        if (parent[u] == NULL_NODE) {
-            return ancestral_state;
-        }
-        u = parent[u];
-    }
-    return allelic_state[u];
-}
-
 /* During the forward and backward sweeps, the allelic state of every node
  * without a parent is ROOT_ALLELE, unless it has a mutation at the current
  * site. insert_edge and remove_edge keep this up to date. */
 #define ROOT_ALLELE (-2)
 
-/* As get_allelic_state, but for a tree in which the roots are marked with
- * ROOT_ALLELE, so the walk up the tree doesn't need to check for the root.
- * This is the innermost loop of the HMM, so there is deliberately no assert
- * here (the Python module is compiled with asserts on); the marks are
- * checked in tsls_hmm_check_state. */
+/* Returns the allelic state of node u, given the allelic_state array in
+ * which the nodes with mutations at the current site are set and the roots
+ * are marked with ROOT_ALLELE, so the walk up the tree doesn't need to
+ * check for the root. This is the innermost loop of the HMM, so there is
+ * deliberately no assert here (the Python module is compiled with asserts
+ * on); the marks are checked in tsls_hmm_check_state. */
 static inline allele_t
 get_marked_allelic_state(const allele_t *restrict allelic_state,
     const tsk_id_t *restrict parent, tsk_id_t u, allele_t ancestral_state)
@@ -1492,9 +1478,13 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     double x;
     bool valid;
     tsk_id_t *restrict parent = self->parent;
-    const allele_t *restrict allelic_state = self->allelic_state;
+    allele_t *restrict allelic_state = self->allelic_state;
     int8_t *restrict recombination_required = self->recombination_required;
     const double *restrict sites_position = self->sites_position;
+    /* Every root of the traceback tree has the virtual root as its parent,
+     * whose allelic state is the site's ancestral state, so the walk to find
+     * a node's allele doesn't need to check for the root. */
+    const tsk_id_t virtual_root = (tsk_id_t) self->num_nodes;
     const tsk_edge_table_t *edges = &self->tree_sequence->tables->edges;
     const tsk_id_t *restrict edge_parent = edges->parent;
     const tsk_id_t *restrict edge_child = edges->child;
@@ -1516,10 +1506,13 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
 
     /* Build the tree at the last site, and then go through the trees in
      * reverse, running the traceback at each site. */
-    memset(parent, 0xff, self->num_nodes * sizeof(*parent));
+    for (u = 0; u < virtual_root; u++) {
+        parent[u] = virtual_root;
+    }
+    parent[virtual_root] = NULL_NODE;
     memset(
         recombination_required, 0xff, self->num_nodes * sizeof(*recombination_required));
-    memset(self->allelic_state, 0xff, self->num_nodes * sizeof(*self->allelic_state));
+    memset(allelic_state, 0xff, self->num_nodes * sizeof(*allelic_state));
     x = sites_position[end - 1];
     ret = seek_tree_position(&tp, x);
     if (ret != 0) {
@@ -1537,18 +1530,22 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
             assert(valid);
             (void) valid;
             for (j = tp.out.start; j != tp.out.stop; j--) {
-                parent[edge_child[tp.out.order[j]]] = NULL_NODE;
+                parent[edge_child[tp.out.order[j]]] = virtual_root;
             }
             for (j = tp.in.start; j != tp.in.stop; j--) {
                 e = tp.in.order[j];
                 parent[edge_child[e]] = edge_parent[e];
             }
         }
+        allelic_state[virtual_root] = self->ancestral_state[site];
         tsls_hmm_set_allelic_state(self, site);
         u = path_parent[path_length];
-        match[site]
-            = get_allelic_state(allelic_state, parent, u, self->ancestral_state[site]);
+        while (allelic_state[u] == TSK_NULL) {
+            u = parent[u];
+        }
+        match[site] = allelic_state[u];
         tsls_hmm_clear_allelic_state(self, site);
+        u = path_parent[path_length];
 
         /* Mark the traceback nodes on the tree */
         tsls_hmm_set_recombination_required(self, site, recombination_required);
@@ -1558,7 +1555,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
          * root has a likelihood, and so is marked. */
         while (recombination_required[u] == -1) {
             u = parent[u];
-            assert(u != NULL_NODE);
+            assert(u != virtual_root);
         }
         if (recombination_required[u] && site > start) {
             max_likelihood_node = self->max_likelihood_node[site - 1];
