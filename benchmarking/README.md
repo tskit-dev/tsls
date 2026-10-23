@@ -569,8 +569,9 @@ builds.)
 
 - Single runs mislead. tsls's time for the same build varied by up to 20%
   between processes (6 samples: 16.4 to 19.9 s) while tsinfer-hmm's was
-  steady, which fits physical page placement varying between runs; with
-  huge pages tsls's times are steadier (14.2 and 14.7 s). Another session
+  steady, which fits physical page placement varying between runs. With
+  huge pages alone it still varied (14.2 to 18.0 s over four runs); with
+  the two node records, the two runs gave 14.1 and 14.5 s. Another session
   on the machine may also compete for memory bandwidth at times. Builds
   were therefore compared with full runs repeated in alternation (build A,
   build B, A, B), and a single `--quick` run once showed 1.36 for group
