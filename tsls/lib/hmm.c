@@ -680,7 +680,10 @@ tsls_hmm_update_num_below(tsls_hmm_t *self, tsk_id_t u, int64_t delta)
 }
 
 /* Returns the likelihood inherited by node u, filling in the likelihood
- * cache along the path so that later queries are fast. */
+ * cache along the path so that later queries are fast. The walks up the
+ * tree here and in tsls_hmm_get_inherited_likelihood_and_flag are inner
+ * loops, so they have no asserts (every root has a likelihood, which
+ * tsls_hmm_check_state checks). */
 static double
 tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
 {
@@ -693,7 +696,6 @@ tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
     v = u;
     while (likely(L[v] == NULL_LIKELIHOOD) && likely(L_cache[v] == CACHE_UNSET)) {
         v = parent[v];
-        assert(v != NULL_NODE);
     }
     value = L_cache[v];
     if (unlikely(value == CACHE_UNSET)) {
@@ -948,7 +950,6 @@ tsls_hmm_insert_mutation_likelihoods(tsls_hmm_t *self, const tsk_id_t site)
             u = node;
             while (L[u] == NULL_LIKELIHOOD) {
                 u = parent[u];
-                assert(u != NULL_NODE);
             }
             tsls_hmm_add_likelihood(self, node, L[u]);
         }
@@ -974,7 +975,6 @@ tsls_hmm_get_inherited_likelihood_and_flag(
     v = u;
     while (likely(L[v] == NULL_LIKELIHOOD) && likely(L_cache[v] == CACHE_UNSET)) {
         v = parent[v];
-        assert(v != NULL_NODE);
     }
     if (L_cache[v] == CACHE_UNSET) {
         value = L[v];
