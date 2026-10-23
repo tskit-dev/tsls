@@ -1558,6 +1558,7 @@ tsls_hmm_find_path_matrix(tsls_hmm_t *self, tsk_id_t start,
     tsk_id_t *path_parent, compressed_matrix_t *output)
 {
     int ret = 0;
+    bool valid_window = false;
 
     if (start < 0 || end > (tsk_id_t) self->num_sites || start >= end) {
         ret = TSLS_ERR_BAD_SITE_RANGE;
@@ -1567,6 +1568,7 @@ tsls_hmm_find_path_matrix(tsls_hmm_t *self, tsk_id_t start,
         ret = TSLS_ERR_BAD_SITE_RANGE;
         goto out;
     }
+    valid_window = true;
     ret = tsls_hmm_reset_traceback(self);
     if (ret != 0) {
         goto out;
@@ -1578,10 +1580,15 @@ tsls_hmm_find_path_matrix(tsls_hmm_t *self, tsk_id_t start,
     ret = tsls_hmm_run_traceback(self, start, end, matched_haplotype, path_length,
         path_left, path_right, path_parent);
 out:
-    /* Reset some memory for the next call */
-    memset(self->traceback, 0, self->num_sites * sizeof(*self->traceback));
-    memset(self->max_likelihood_node, 0xff,
-        self->num_sites * sizeof(*self->max_likelihood_node));
+    /* Reset the per-site state for the next call. Only the sites in the
+     * window can have been set, and resetting just these matters for short
+     * windows (tsinfer's early ancestors) on long sequences. */
+    if (valid_window) {
+        memset(self->traceback + start, 0,
+            (size_t) (end - start) * sizeof(*self->traceback));
+        memset(self->max_likelihood_node + start, 0xff,
+            (size_t) (end - start) * sizeof(*self->max_likelihood_node));
+    }
     memset(self->allelic_state, 0xff, self->num_nodes * sizeof(*self->allelic_state));
     return ret;
 }
