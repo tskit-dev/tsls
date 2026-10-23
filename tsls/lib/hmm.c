@@ -713,13 +713,16 @@ tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
     return value;
 }
 
+/* Unset the cached values on the path up from u. Values are only cached on
+ * nodes without likelihoods, and no root has a cached value (see
+ * tsls_hmm_remove_edge), so the walk stops below a root. */
 static inline void
 tsls_hmm_reset_likelihood_cache(tsls_hmm_t *self, tsk_id_t u)
 {
     double *restrict L_cache = self->likelihood_cache;
     const tsk_id_t *restrict parent = self->parent;
 
-    while (u != NULL_NODE && L_cache[u] != CACHE_UNSET) {
+    while (L_cache[u] != CACHE_UNSET) {
         L_cache[u] = CACHE_UNSET;
         u = parent[u];
     }
@@ -745,6 +748,12 @@ tsls_hmm_remove_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c,
     remove_edge(p, c, self->parent, self->left_child, self->right_child,
         self->left_sib, self->right_sib);
     self->allelic_state[c] = ROOT_ALLELE;
+    /* c is now a root, and so has a likelihood. Its cached value (if any,
+     * from an earlier removal at this position) is the same as its
+     * likelihood, and clearing it means that no root has a cached value,
+     * so walks over the cache always stop below a root (see
+     * tsls_hmm_reset_likelihood_cache). */
+    self->likelihood_cache[c] = CACHE_UNSET;
     if (update_likelihoods) {
         /* Each node can only become isolated once when removing edges, so
          * the isolated list has at most num_nodes entries. */
