@@ -377,6 +377,11 @@ for the whole group divided by the number of haplotypes.
 
 ### tsls against tsinfer-hmm: where the time goes
 
+This section describes the engine before the `tsls_hmm_t` refactor (when
+it was `ancestor_matcher_t` in `matcher.c`); see
+[Instruction counts after the refactor](#instruction-counts-after-the-tsls_hmm_t-refactor)
+for the current state.
+
 tsls now stores a smaller Viterbi traceback than tsinfer-hmm (13 against
 21 entries per site for samples; see `experiments/compression/README.md`),
 but it isn't faster, because storing the traceback is under 1% of the
@@ -445,3 +450,71 @@ over total tsinfer-hmm time (100 group 1485 ancestors, 6 samples):
   can vary by 20% between passes) shows up as a difference between
   engines. Ratios from `run.py` ranged from 1.09 to 1.25 on the same
   builds. Use paired measurements, as above, to compare engines.
+
+### Instruction counts after the `tsls_hmm_t` refactor
+
+The engine is now `tsls_hmm_t` (`tsls/lib/hmm.c`). It works directly on a
+`tsk_treeseq_t`, moves between trees with tskit's `tsk_tree_position_t`,
+and finds the first tree of a window by seeking from a null position
+instead of applying every edge before it. The git history from `7277b87`
+records each optimisation step and the dead ends, with instruction counts.
+
+`callgrind.py measure` counts instructions in `find_path` only, with setup
+run uninstrumented, on a profiling set sized to run in a few minutes
+(tsinfer-hmm's counts are cached, so only tsls is remeasured):
+
+```
+uv run python callgrind.py measure -j 4
+```
+
+The sample in that set is matched against its reference cut at site
+100,000, because matching only the first sites of the full reference makes
+tsinfer-hmm's traceback walk in from the end of the sequence, which a whole
+sample doesn't. On the original set (20 ancestors per group, 1 whole
+sample), before the refactor and after the optimisations:
+
+| workload | tsinfer-hmm | tsls before | tsls after | ratio after |
+|---|---|---|---|---|
+| ancestors, group 84 | 0.296 G | 0.608 G | 0.154 G | 0.52 |
+| ancestors, group 1000 | 0.621 G | 0.975 G | 0.320 G | 0.52 |
+| ancestors, group 1483 | 2.388 G | 2.845 G | 1.813 G | 0.76 |
+| ancestors, group 1484 | 9.911 G | 11.137 G | 9.046 G | 0.91 |
+| ancestors, group 1485 | 6.653 G | 7.445 G | 5.679 G | 0.85 |
+| 1 sample | 9.922 G | 10.955 G | 9.633 G | 0.97 |
+
+tsls finds tsinfer's path for all 1,914 queries in the six workloads, and
+its traceback sizes are unchanged.
+
+### Wall time after the refactor
+
+Fewer instructions did not mean less time. `paired.py` times each query
+three times with each engine, alternating, and keeps the best time for
+each (on an idle machine; the ratio is total tsls time over total
+tsinfer-hmm time, including building the matcher for each query, as
+`engines.py` does):
+
+| workload | queries | tsinfer-hmm (s) | tsls (s) | ratio |
+|---|---|---|---|---|
+| ancestors, group 84 | 50 | 0.21 | 0.30 | 1.43 |
+| ancestors, group 1000 | 50 | 0.46 | 0.55 | 1.19 |
+| ancestors, group 1483 | 100 | 4.76 | 5.67 | 1.19 |
+| ancestors, group 1484 | 50 | 5.23 | 6.42 | 1.23 |
+| ancestors, group 1485 | 100 | 12.98 | 16.20 | 1.25 |
+| samples | 6 | 17.69 | 20.22 | 1.14 |
+
+Two things account for this:
+
+- Building a `tsls.Hmm` takes 4-8 ms against 1.5 ms for tsinfer-hmm's
+  `AncestorMatcher`, because it encodes the alleles of every site from the
+  tables each time. This dominates for early ancestors.
+- `find_path` itself is slower (1.10 on group 1485, 1.18 on samples, timed
+  separately) despite executing fewer instructions, because it misses the
+  cache more. Callgrind's cache simulation on the profiling sample: tsls
+  has 2% fewer instructions but 25% more L1 read misses, 2.2 times the L1
+  write misses and 35% more last-level read misses than tsinfer-hmm. The
+  last-level misses are mostly in tskit's tree position scans, which read
+  edge coordinates through the index arrays (`left[order[j]]`) where
+  tsinfer-hmm scans a contiguous array of sorted edges, and in reading
+  mutations from `tsk_mutation_t` structs. The extra L1 write misses come
+  from two of the optimisations, which write per-edge marks into
+  `allelic_state` and `likelihood_cache`.
