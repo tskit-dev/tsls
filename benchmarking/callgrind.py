@@ -34,10 +34,13 @@ FIND_PATH_FUNCTIONS = {
     "tsls": "tsls_hmm_find_path",
 }
 
-# (workload, number of queries, maximum number of sites per query). Each is
-# about 2G instructions in tsinfer-hmm. A whole sample is about 10G, so the
-# sample is restricted to the start of its window: like a whole sample, its
-# forward sweep then starts at the first site, without a long seek.
+# (workload, number of queries, number of sites). Each is about 2G
+# instructions in tsinfer-hmm. A whole sample is about 10G, so for the
+# sample the reference is cut at the specified number of sites, and the
+# sample is matched over all of them. Matching just the first sites of the
+# full reference would not be representative: tsinfer-hmm's traceback walks
+# in from the end of the sequence, which a whole sample doesn't need, and
+# which made tsinfer-hmm's counts about 4% higher.
 WORKLOADS = [
     ("ancestors_g84", 20, None),
     ("ancestors_g1000", 20, None),
@@ -58,13 +61,13 @@ def make_engine(name, ts, model):
     )
 
 
-def clip_window(start, end, max_sites):
+def cut_reference(ts, num_sites):
     """
-    Return the first max_sites sites of the window [start, end).
+    Return the tree sequence cut just before the specified site, so that it
+    has only the first num_sites sites. Node IDs are unchanged.
     """
-    if max_sites is None:
-        return start, end
-    return start, min(end, start + max_sites)
+    cut = ts.sites_position[num_sites]
+    return ts.keep_intervals([[0, cut]], simplify=False).rtrim()
 
 
 @click.group()
@@ -76,22 +79,25 @@ def cli():
 @click.argument("workload_dir", type=click.Path(exists=True, file_okay=False))
 @click.argument("engine_name", type=click.Choice(list(FIND_PATH_FUNCTIONS)))
 @click.option("-n", "--num-queries", type=int, default=20)
-@click.option("--max-sites", type=int, default=None)
+@click.option("--num-sites", type=int, default=None)
 @click.option(
     "--instrument",
     is_flag=True,
     help="Switch on callgrind instrumentation after setup",
 )
-def run(workload_dir, engine_name, num_queries, max_sites, instrument):
+def run(workload_dir, engine_name, num_queries, num_sites, instrument):
     """
     Match the first NUM_QUERIES queries in WORKLOAD_DIR with the specified
-    engine, each over at most MAX_SITES sites at the start of its window,
-    printing the parents of each path.
+    engine, printing the parents of each path. If NUM_SITES is specified,
+    the reference is cut after that many sites, and the queries are matched
+    over their windows within these sites.
     """
     workload_dir = pathlib.Path(workload_dir)
     model = queries.load_model(workload_dir)
     ts = run_module.load_ts(workload_dir / "reference.trees")
     H, _, df = queries.load_queries(workload_dir)
+    if num_sites is not None:
+        ts = cut_reference(ts, num_sites)
     engine = make_engine(engine_name, ts, model)
     if instrument:
         subprocess.run(
@@ -101,8 +107,9 @@ def run(workload_dir, engine_name, num_queries, max_sites, instrument):
         )
     for query_id in df.query_id[:num_queries]:
         start, end = queries.query_window(H, query_id)
-        start, end = clip_window(start, end, max_sites)
-        _, _, parent, _, _ = engine.match(H[query_id], start, end)
+        h = H[query_id][: ts.num_sites]
+        end = min(end, ts.num_sites)
+        _, _, parent, _, _ = engine.match(h, start, end)
         print(query_id, " ".join(str(p) for p in np.asarray(parent)))
 
 
@@ -114,14 +121,14 @@ def read_total_ir(path):
     raise ValueError(f"No totals in {path}")
 
 
-def out_path(out_dir, workload, num_queries, max_sites, engine_name):
-    sites = "" if max_sites is None else f".first{max_sites}"
+def out_path(out_dir, workload, num_queries, num_sites, engine_name):
+    sites = "" if num_sites is None else f".cut{num_sites}"
     return pathlib.Path(out_dir) / (
         f"callgrind.{workload}.n{num_queries}{sites}.{engine_name}.out"
     )
 
 
-def callgrind(data_dir, workload, num_queries, max_sites, engine_name, out_file):
+def callgrind(data_dir, workload, num_queries, num_sites, engine_name, out_file):
     cmd = [
         "valgrind",
         "--tool=callgrind",
@@ -138,8 +145,8 @@ def callgrind(data_dir, workload, num_queries, max_sites, engine_name, out_file)
         str(num_queries),
         "--instrument",
     ]
-    if max_sites is not None:
-        cmd += ["--max-sites", str(max_sites)]
+    if num_sites is not None:
+        cmd += ["--num-sites", str(num_sites)]
     result = subprocess.run(cmd, check=False, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{result.stderr[-2000:]}")
@@ -179,13 +186,13 @@ def measure(data_dir, workload_names, out_dir, baseline_dir, jobs):
     if len(workload_names) > 0:
         workloads = [w for w in WORKLOADS if w[0] in workload_names]
     tasks = []
-    for workload, num_queries, max_sites in workloads:
+    for workload, num_queries, num_sites in workloads:
         for engine_name, directory in [("tsinfer", baseline_dir), ("tsls", out_dir)]:
             pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
-            path = out_path(directory, workload, num_queries, max_sites, engine_name)
+            path = out_path(directory, workload, num_queries, num_sites, engine_name)
             if engine_name == "tsinfer" and path.exists():
                 continue
-            tasks.append((workload, num_queries, max_sites, engine_name, path))
+            tasks.append((workload, num_queries, num_sites, engine_name, path))
     # Run the largest workloads first, so that they don't finish last
     tasks.sort(key=lambda task: task[0] not in ("samples", "ancestors_g1485"))
     with concurrent.futures.ThreadPoolExecutor(jobs) as executor:
@@ -195,17 +202,17 @@ def measure(data_dir, workload_names, out_dir, baseline_dir, jobs):
 
     click.echo("| workload | queries | tsinfer | tsls | ratio |")
     click.echo("|---|---|---|---|---|")
-    for workload, num_queries, max_sites in workloads:
+    for workload, num_queries, num_sites in workloads:
         counts = []
         paths = []
         for engine_name, directory in [("tsinfer", baseline_dir), ("tsls", out_dir)]:
-            path = out_path(directory, workload, num_queries, max_sites, engine_name)
+            path = out_path(directory, workload, num_queries, num_sites, engine_name)
             counts.append(read_total_ir(path))
             paths.append(path.with_suffix(".paths").read_text())
         label = (
             f"{num_queries}"
-            if max_sites is None
-            else f"{num_queries} ({max_sites} sites)"
+            if num_sites is None
+            else f"{num_queries} ({num_sites} sites)"
         )
         click.echo(
             f"| {workload} | {label} | {counts[0] / 1e9:.3f} G | "

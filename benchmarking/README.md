@@ -366,9 +366,10 @@ for the whole group divided by the number of haplotypes.
   and traceback sizes. (These figures predate the engine changes
   described below, and `run.py` timings are biased by run order; see
   [tsls against tsinfer-hmm](#tsls-against-tsinfer-hmm-where-the-time-goes).)
-  Building tsls's `MatcherIndexes` takes several
+  At the time, building tsls's `MatcherIndexes` took several
   times longer (3.6 s against 0.4 s for the full ancestors tree
-  sequence), but this is done once per group.
+  sequence); tsls now uses a `tsls.TreeSequence` (a `tsk_treeseq_t`)
+  instead, built once per group.
 - Per-query times are close to tsinfer's per-haplotype CPU time, so the
   HMM accounts for most of tsinfer's matching cost.
 - The cost is in the last few ancestor groups and the samples. Matching
