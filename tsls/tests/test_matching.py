@@ -688,7 +688,9 @@ class TestPruning:
         ts = EXAMPLES[name]()
         A, present, _ = dense.node_states(ts, ALLELES)
         for h in queries(ts, A, present):
-            _, path1, match1, F1, B1 = self.run_all(ts, h)
+            # Pruning processes every Viterbi site in full, which may choose
+            # another path among equally likely ones than sparse sites do.
+            _, path1, match1, F1, B1 = self.run_all(ts, h, sparse=False)
             _, path2, match2, F2, B2 = self.run_all(ts, h, pruning=pruning)
             for x, y in zip(path1, path2):
                 np.testing.assert_array_equal(x, y)
@@ -777,9 +779,13 @@ class TestViterbiMatrix:
             )
             np.testing.assert_allclose(vm.normalisation_factor, c, rtol=1e-12)
             np.testing.assert_allclose(vm.decode(), V, rtol=1e-12, atol=1e-300)
-            # The same path as find_path
+            # The same path as find_path processing every site in full, as
+            # viterbi_matrix does
+            full = tsls.Hmm(
+                ts, rho_a, mu_a, alleles=ALLELES, weight_by_n=weight_by_n, sparse=False
+            )
             match = np.zeros(m, dtype=np.int8)
-            expected = am.find_path(h, 0, m, match)
+            expected = full.find_path(h, 0, m, match)
             for x, y in zip(path, expected):
                 np.testing.assert_array_equal(x, y)
             np.testing.assert_array_equal(matched, match)
@@ -833,3 +839,191 @@ class TestViterbiMatrix:
         np.testing.assert_array_equal(cm.decode(), loaded.decode())
         with pytest.raises(ValueError, match="does not match"):
             tsls.load_compressed_matrix(path, single_tree_ts())
+
+
+def wright_fisher_ts(seed, *, num_trees_hint, population_size=15, generations=25):
+    """
+    Return a random tree sequence from a haploid Wright-Fisher simulation
+    with 60 sites, whose samples are the last generation and some internal
+    nodes. Small populations give deep trees with polytomies and unary
+    nodes, as in sc2ts ARGs. Each child recombines with probability
+    num_trees_hint / (population_size * generations), and some sites have
+    several mutations (on the same or different nodes).
+    """
+    rng = np.random.default_rng(seed)
+    L = 100
+    tables = tskit.TableCollection(L)
+    current = [tables.nodes.add_row(time=generations) for _ in range(population_size)]
+    recombination = num_trees_hint / (population_size * generations)
+    for g in range(generations - 1, -1, -1):
+        parents = current
+        current = []
+        for _ in range(population_size):
+            child = tables.nodes.add_row(time=g)
+            p1, p2 = rng.choice(parents, size=2)
+            if rng.random() < recombination:
+                x = int(rng.integers(1, L))
+                tables.edges.add_row(0, x, p1, child)
+                tables.edges.add_row(x, L, p2, child)
+            else:
+                tables.edges.add_row(0, L, p1, child)
+            current.append(child)
+    internal = rng.choice(
+        np.arange(population_size, tables.nodes.num_rows - population_size),
+        size=5,
+        replace=False,
+    )
+    tables.sort()
+    tables.simplify(np.concatenate([current, internal]).astype(np.int32))
+    ts = tables.tree_sequence()
+    tables = ts.dump_tables()
+    positions = np.sort(rng.choice(np.arange(1, 10 * L), size=60, replace=False)) / 10
+    for x in positions:
+        tree = ts.at(x)
+        in_tree = [u for u in tree.nodes() if tree.parent(u) != -1 or tree.num_children(u)]
+        ancestral = ACGT[rng.integers(4)]
+        site = tables.sites.add_row(position=x, ancestral_state=ancestral)
+        num_mutations = rng.choice([1, 1, 1, 2, 3])
+        nodes = rng.choice(in_tree, size=num_mutations)
+        # Older mutations first, as tskit requires
+        for u in sorted(nodes, key=lambda u: -ts.nodes_time[u]):
+            tables.mutations.add_row(site=site, node=u, derived_state=ACGT[rng.integers(4)])
+    return finalise(tables)
+
+
+def noisy_queries(ts, A, present, seed):
+    """
+    Return copies and two-parent recombinants of nodes in every tree, with
+    some sites changed and some missing.
+    """
+    rng = np.random.default_rng(seed)
+    always = np.where(np.all(present, axis=0))[0]
+    m = ts.num_sites
+    H = []
+    for _ in range(6):
+        u, v = rng.choice(always, size=2)
+        x = int(rng.integers(m))
+        h = np.concatenate([A[:x, u], A[x:, v]])
+        k = int(rng.integers(4))
+        sites = rng.choice(m, size=k, replace=False)
+        h[sites] = rng.integers(len(ALLELES), size=k)
+        h[rng.choice(m, size=int(rng.integers(3)), replace=False)] = -1
+        H.append(h.astype(np.int8))
+    return H
+
+
+class TestSparse:
+    """
+    Viterbi processes most sites sparsely when trees span many sites; check
+    that this finds paths with the same likelihood as processing every site
+    in full.
+    """
+
+    def matchers(self, ts, rho, mu, weight_by_n, likelihood_threshold=None):
+        kwargs = dict(
+            alleles=ALLELES,
+            weight_by_n=weight_by_n,
+            likelihood_threshold=likelihood_threshold,
+            extended_checks=True,
+        )
+        return (
+            tsls.Hmm(ts, rho, mu, **kwargs),
+            tsls.Hmm(ts, rho, mu, sparse=False, **kwargs),
+        )
+
+    @pytest.mark.parametrize("seed", range(6))
+    @pytest.mark.parametrize("num_trees_hint", [0, 2, 10])
+    @pytest.mark.parametrize("weight_by_n", [True, False])
+    @pytest.mark.parametrize("likelihood_threshold", [None, 1e-3])
+    def test_against_full(self, seed, num_trees_hint, weight_by_n, likelihood_threshold):
+        ts = wright_fisher_ts(seed, num_trees_hint=num_trees_hint)
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        rho = np.full(m, 0.02)
+        mu = np.full(m, 0.01)
+        n = ts.num_nodes if weight_by_n else 1
+        sparse, full = self.matchers(ts, rho, mu, weight_by_n, likelihood_threshold)
+        num_sparse_sites = 0
+        for h in noisy_queries(ts, A, present, seed):
+            values = []
+            for am in [sparse, full]:
+                match = np.zeros(m, dtype=np.int8)
+                left, right, parent = am.find_path(h, 0, m, match)
+                path = path_by_site(ts, left, right, parent)
+                np.testing.assert_array_equal(match, A[np.arange(m), path])
+                values.append(
+                    dense.path_log_likelihood(
+                        A, present, continuous, h, rho, mu, len(ALLELES), n, path
+                    )
+                )
+            num_sparse_sites += sparse.num_sparse_sites
+            assert full.num_sparse_sites == 0
+            assert values[0] == pytest.approx(values[1], rel=1e-9)
+            if likelihood_threshold is None:
+                optimum = dense.viterbi_log_likelihood(
+                    A, present, continuous, h, rho, mu, len(ALLELES), n
+                )
+                assert values[0] == pytest.approx(optimum, rel=1e-9)
+        if num_trees_hint == 0:
+            assert num_sparse_sites > 0
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_windows(self, seed):
+        ts = wright_fisher_ts(seed, num_trees_hint=2)
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        rho = np.full(m, 0.02)
+        mu = np.full(m, 0.01)
+        sparse, full = self.matchers(ts, rho, mu, False)
+        for h in noisy_queries(ts, A, present, seed)[:2]:
+            for start, end in [(0, 30), (10, 50), (25, 60), (59, 60)]:
+                values = []
+                for am in [sparse, full]:
+                    match = np.zeros(m, dtype=np.int8)
+                    left, right, parent = am.find_path(h, start, end, match)
+                    path = path_by_site(ts, left, right, parent, start, end)
+                    window = (A[start:end], present[start:end])
+                    cont = continuous[start:end].copy()
+                    cont[0] = present[start]
+                    args = (*window, cont, h[start:end], rho[start:end], mu[start:end])
+                    values.append(dense.path_log_likelihood(*args, len(ALLELES), 1, path))
+                assert values[0] == pytest.approx(values[1], rel=1e-9)
+
+    def test_rates_change(self):
+        # Sites whose rates differ from the previous site's are processed in
+        # full, and the others can be sparse.
+        ts = wright_fisher_ts(1, num_trees_hint=0)
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        rho = np.repeat([0.01, 0.05, 0.02], [20, 20, m - 40])
+        mu = np.repeat([0.01, 0.02], [30, m - 30])
+        sparse, full = self.matchers(ts, rho, mu, True)
+        for h in noisy_queries(ts, A, present, 1):
+            values = []
+            for am in [sparse, full]:
+                match = np.zeros(m, dtype=np.int8)
+                left, right, parent = am.find_path(h, 0, m, match)
+                path = path_by_site(ts, left, right, parent)
+                values.append(
+                    dense.path_log_likelihood(
+                        A, present, continuous, h, rho, mu, len(ALLELES), ts.num_nodes, path
+                    )
+                )
+            assert values[0] == pytest.approx(values[1], rel=1e-9)
+            optimum = dense.viterbi_log_likelihood(
+                A, present, continuous, h, rho, mu, len(ALLELES), ts.num_nodes
+            )
+            assert values[0] == pytest.approx(optimum, rel=1e-9)
+
+    def test_matrix_and_pruning_are_full(self):
+        ts = wright_fisher_ts(0, num_trees_hint=0)
+        m = ts.num_sites
+        h = np.zeros(m, dtype=np.int8)
+        am = tsls.Hmm(ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES)
+        am.viterbi_matrix(h)
+        assert am.num_sparse_sites == 0
+        am = tsls.Hmm(
+            ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES, pruning=("top_n", 5)
+        )
+        am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
+        assert am.num_sparse_sites == 0

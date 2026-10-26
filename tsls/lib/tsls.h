@@ -37,6 +37,8 @@
 #define TSLS_EXTENDED_CHECKS     (1 << 0)
 #define TSLS_DISABLE_WEIGHT_BY_N (1 << 1)
 #define TSLS_COUNT_DISTINCT      (1 << 2)
+/* Process every Viterbi site in full (see tsls_hmm_process_site_sparse) */
+#define TSLS_DISABLE_SPARSE      (1 << 3)
 
 /* Experimental pruning modes. After normalisation at each site, pruned
  * nodes are given the value likelihood_threshold. */
@@ -196,11 +198,34 @@ typedef struct {
     tsk_id_t *likelihood_nodes_tmp;
     tsk_id_t *likelihood_nodes;
     traceback_delta_t *traceback;
-    /* The nodes in the traceback's set as of the last site stored */
-    tsk_id_t *traceback_nodes;
-    int num_traceback_nodes;
     /* Scratch buffer for the previous flags of a site's traceback delta */
     int8_t *traceback_flags_tmp;
+    /* The nodes removed from the likelihood list at the current site, for
+     * the traceback delta */
+    tsk_id_t *removed_nodes;
+    int num_removed_nodes;
+    /* Sparse Viterbi (see tsls_hmm_process_site_sparse). When the tree is
+     * numbered, preorder[u] is the position of u in a preorder traversal
+     * of the tree (-1 if u is not in the tree), the subtree of u is the
+     * range [preorder[u], subtree_end[u]), and the likelihood list is kept
+     * sorted by preorder. */
+    bool tree_numbered;
+    tsk_id_t tree_end_site;
+    int32_t num_numbered;
+    int32_t *preorder;
+    int32_t *subtree_end;
+    /* The nodes whose values must be recomputed at the next site (they
+     * changed or mismatched at this site), unless all_changed is set */
+    tsk_id_t *changed;
+    int num_changed;
+    tsk_id_t *changed_next;
+    bool all_changed;
+    /* The nodes processed at a sparse site, and a per-node stamp to avoid
+     * processing a node twice */
+    tsk_id_t *site_nodes;
+    uint32_t *stamp;
+    uint32_t current_stamp;
+    size_t num_sparse_sites;
     tsi_blkalloc_t traceback_allocator;
     size_t total_traceback_size;
     /* The total number of distinct likelihood values over sites, if
