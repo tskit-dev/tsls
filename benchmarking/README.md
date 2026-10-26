@@ -663,3 +663,22 @@ four-build runs.)
   different path with the same likelihood, and one k = 1 query took a
   path with 9 more mismatches, which ties in the floored values (the
   floor erases how many mismatches a node has made; see `c81ac3b`).
+
+### Full sc2ts ARG
+
+One run each, k = 1 threshold, on the full benchmark ARG (3.4M nodes,
+510 trees, 29,565 sites):
+
+| query | tsls (s) | tsinfer-hmm (s) | ratio | sparse sites | traceback memory (MiB), tsls / tsinfer-hmm |
+|---|---|---|---|---|---|
+| 0 | 4.3 | 8.3 | 0.51 | 1,229 | 26 / 320 |
+| 11 | 27.3 | 104.1 | 0.26 | 4,091 | 26 / 2,240 |
+| 22 | 33.6 | 106.7 | 0.31 | 4,093 | 26 / 2,368 |
+
+Paths are the same as tsinfer-hmm's. The gain is much smaller than on
+the sub-ARGs because few sites are sparse: trees span about 58 sites
+here, against about 1,100 on the 300k sub-ARG, and numbering a tree costs
+time in proportion to all 3.4M nodes, so most trees aren't numbered.
+Numbering 16 times more eagerly made more sites sparse (6,490 and 9,780
+for queries 11 and 22) but was slower (35 and 40 s), so numbering whole
+trees is the limit at this scale.
