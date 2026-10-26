@@ -71,11 +71,17 @@ extern int tsi_blkalloc_init(tsi_blkalloc_t *self, size_t chunk_size);
 extern void *tsi_blkalloc_get(tsi_blkalloc_t *self, size_t size);
 extern void tsi_blkalloc_free(tsi_blkalloc_t *self);
 
+/* The changes to the Viterbi traceback at a site: the traceback at a site
+ * is a set of (node, recombination_required) pairs, and a node in the tree
+ * takes the flag of its nearest ancestor in the set. We store, for each
+ * node whose flag changed (or that entered or left the set) at this site,
+ * its flag at the previous site (-1 if it was not in the set), so that the
+ * traceback can undo the changes moving right to left. */
 typedef struct {
     int32_t size;
     tsk_id_t *node;
-    int8_t *recombination_required;
-} node_state_list_t;
+    int8_t *previous_flag;
+} traceback_delta_t;
 
 /* The compressed output of the forward and backward algorithms. At each
  * site we store a list of (node, value) pairs: the value for a node in the
@@ -141,6 +147,9 @@ typedef struct {
     /* The recombination_required flag inherited by the node, valid where
      * the likelihood cache is set. Only filled when coalescing Viterbi. */
     int8_t recombination_required_cache;
+    /* The node's flag in the traceback as of the last site stored, or -1
+     * if it is not in the traceback's set */
+    int8_t traceback_flag;
 } tsls_node_t;
 
 /* A node's likelihood, with the cache used when coalescing. */
@@ -186,7 +195,12 @@ typedef struct {
     tsk_id_t *max_likelihood_node;
     tsk_id_t *likelihood_nodes_tmp;
     tsk_id_t *likelihood_nodes;
-    node_state_list_t *traceback;
+    traceback_delta_t *traceback;
+    /* The nodes in the traceback's set as of the last site stored */
+    tsk_id_t *traceback_nodes;
+    int num_traceback_nodes;
+    /* Scratch buffer for the previous flags of a site's traceback delta */
+    int8_t *traceback_flags_tmp;
     tsi_blkalloc_t traceback_allocator;
     size_t total_traceback_size;
     /* The total number of distinct likelihood values over sites, if

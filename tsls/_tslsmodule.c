@@ -661,55 +661,6 @@ out:
 }
 
 static PyObject *
-Hmm_get_traceback(Hmm *self, PyObject *args)
-{
-    PyObject *ret = NULL;
-    unsigned long site;
-    node_state_list_t *list;
-    PyObject *dict = NULL;
-    PyObject *key = NULL;
-    PyObject *value = NULL;
-    int j;
-
-    if (Hmm_check_state(self) != 0) {
-        goto out;
-    }
-    if (!PyArg_ParseTuple(args, "k", &site)) {
-        goto out;
-    }
-    if (site >= self->hmm->num_sites) {
-        PyErr_SetString(PyExc_ValueError, "site out of range");
-        goto out;
-    }
-    dict = PyDict_New();
-    if (dict == NULL) {
-        goto out;
-    }
-    list = &self->hmm->traceback[site];
-    for (j = 0; j < list->size; j++) {
-        key = Py_BuildValue("k", (unsigned long) list->node[j]);
-        value = Py_BuildValue("i", (int) list->recombination_required[j]);
-        if (key == NULL || value == NULL) {
-            goto out;
-        }
-        if (PyDict_SetItem(dict, key, value) != 0) {
-            goto out;
-        }
-        Py_DECREF(key);
-        key = NULL;
-        Py_DECREF(value);
-        value = NULL;
-    }
-    ret = dict;
-    dict = NULL;
-out:
-    Py_XDECREF(key);
-    Py_XDECREF(value);
-    Py_XDECREF(dict);
-    return ret;
-}
-
-static PyObject *
 Hmm_get_mean_traceback_size(Hmm *self, void *closure)
 {
     PyObject *ret = NULL;
@@ -784,8 +735,6 @@ static PyMethodDef Hmm_methods[] = {
     { "backward_matrix", (PyCFunction) Hmm_backward_matrix,
         METH_VARARGS | METH_KEYWORDS,
         "Runs the backward algorithm and returns the compressed matrix arrays." },
-    { "get_traceback", (PyCFunction) Hmm_get_traceback, METH_VARARGS,
-        "Returns the traceback likelihood dictionary at the specified site." },
     { NULL } /* Sentinel */
 };
 

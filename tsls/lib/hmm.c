@@ -649,7 +649,7 @@ tsls_hmm_print_state(tsls_hmm_t *self, FILE *out)
             self->traceback[j].size);
         for (k = 0; k < self->traceback[j].size; k++) {
             fprintf(out, "(%d, %d)", self->traceback[j].node[k],
-                self->traceback[j].recombination_required[k]);
+                self->traceback[j].previous_flag[k]);
         }
         fprintf(out, "\n");
     }
@@ -677,7 +677,7 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     self->recombination_rate
         = malloc((self->num_sites + 1) * sizeof(*self->recombination_rate));
     self->mismatch_rate = malloc((self->num_sites + 1) * sizeof(*self->mismatch_rate));
-    self->traceback = calloc(self->num_sites + 1, sizeof(node_state_list_t));
+    self->traceback = calloc(self->num_sites + 1, sizeof(*self->traceback));
     self->max_likelihood_node = malloc((self->num_sites + 1) * sizeof(tsk_id_t));
 
     self->tree = tsls_large_alloc((N + 1) * sizeof(*self->tree));
@@ -691,6 +691,9 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     self->likelihood_nodes = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_nodes));
     self->likelihood_nodes_tmp = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_nodes_tmp));
     self->values_tmp = tsls_large_alloc((N + 1) * sizeof(*self->values_tmp));
+    self->traceback_nodes = tsls_large_alloc((N + 1) * sizeof(*self->traceback_nodes));
+    self->traceback_flags_tmp
+        = tsls_large_alloc((N + 1) * sizeof(*self->traceback_flags_tmp));
 
     if (self->recombination_rate == NULL
         || self->mismatch_rate == NULL || self->traceback == NULL
@@ -699,14 +702,15 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
         || self->left_child == NULL || self->right_child == NULL
         || self->left_sib == NULL || self->right_sib == NULL || self->num_below == NULL
         || self->num_inheriting == NULL || self->likelihood_nodes == NULL
-        || self->likelihood_nodes_tmp == NULL || self->values_tmp == NULL) {
+        || self->likelihood_nodes_tmp == NULL || self->values_tmp == NULL
+        || self->traceback_nodes == NULL || self->traceback_flags_tmp == NULL) {
         ret = TSLS_ERR_NO_MEMORY;
         goto out;
     }
-    /* Alloc in blocks of at least 64MiB, and large enough to hold the
-     * traceback for a site in which every node has a likelihood. */
+    /* Alloc in blocks of at least 4MiB, and large enough to hold the
+     * traceback delta for a site at which every node changes. */
     self->traceback_block_size
-        = TSK_MAX(64 * 1024 * 1024, aligned_size((N + 1) * sizeof(tsk_id_t)) * 2);
+        = TSK_MAX(4 * 1024 * 1024, aligned_size((N + 1) * sizeof(tsk_id_t)) * 2);
     /* If the traceback allocator is using more than 2GiB of RAM free it, so
      * that other threads can use the memory */
     self->traceback_realloc_size = 2L * 1024L * 1024L * 1024L;
@@ -740,6 +744,8 @@ tsls_hmm_free(tsls_hmm_t *self)
     tsls_large_free_array(self->likelihood_nodes, self->num_nodes);
     tsls_large_free_array(self->likelihood_nodes_tmp, self->num_nodes);
     tsls_large_free_array(self->values_tmp, self->num_nodes);
+    tsls_large_free_array(self->traceback_nodes, self->num_nodes);
+    tsls_large_free_array(self->traceback_flags_tmp, self->num_nodes);
     tsi_safe_free(self->max_likelihood_node);
     tsi_safe_free(self->traceback);
     tsi_blkalloc_free(&self->traceback_allocator);
@@ -1063,6 +1069,7 @@ tsls_hmm_init_sweep(
         self->tree[k].allelic_state = ROOT_ALLELE;
         self->tree[k].recombination_required = -1;
         self->tree[k].recombination_required_cache = -1;
+        self->tree[k].traceback_flag = -1;
         self->num_below[k] = 1;
     }
     ret = seek_tree_position(tp, position);
@@ -1324,61 +1331,60 @@ tsls_hmm_total_likelihood(const tsls_hmm_t *self)
     return total;
 }
 
-/* Store the recombination_required state in the traceback */
+/* Store the changes to the traceback at this site: the nodes that have
+ * left the set of likelihood nodes since the last site stored, and the
+ * nodes in the set whose recombination_required flag differs from the one
+ * stored, each with its previous flag (see traceback_delta_t). */
 static int WARN_UNUSED
-tsls_hmm_store_traceback(tsls_hmm_t *self, const tsk_id_t site_id)
+tsls_hmm_store_traceback(tsls_hmm_t *self, const tsk_id_t site)
 {
     int ret = 0;
     tsk_id_t u;
-    int j;
-    int8_t *restrict list_R;
-    tsk_id_t *restrict list_node;
-    node_state_list_t *restrict list;
-    node_state_list_t *restrict T = self->traceback;
-    const tsk_id_t *restrict nodes = self->likelihood_nodes;
+    int j, num_changes;
     tsls_node_t *restrict tree = self->tree;
+    const tsls_likelihood_t *restrict L = self->likelihood;
+    const tsk_id_t *restrict nodes = self->likelihood_nodes;
     const int num_likelihood_nodes = self->num_likelihood_nodes;
-    bool match;
+    tsk_id_t *restrict stored_nodes = self->traceback_nodes;
+    tsk_id_t *restrict changed = self->likelihood_nodes_tmp;
+    int8_t *restrict previous_flag = self->traceback_flags_tmp;
+    traceback_delta_t *restrict delta = &self->traceback[site];
 
-    /* Check to see if the previous site has the same recombination_required. If so,
-     * we can reuse the same list. */
-    match = false;
-    if (site_id > 0) {
-        list = &T[site_id - 1];
-        if (list->size == num_likelihood_nodes) {
-            list_node = list->node;
-            list_R = list->recombination_required;
-            match = true;
-            for (j = 0; j < num_likelihood_nodes; j++) {
-                if (list_node[j] != nodes[j] || list_R[j] != tree[nodes[j]].recombination_required) {
-                    match = false;
-                    break;
-                }
-            }
+    num_changes = 0;
+    for (j = 0; j < self->num_traceback_nodes; j++) {
+        u = stored_nodes[j];
+        if (L[u].value < 0) {
+            changed[num_changes] = u;
+            previous_flag[num_changes] = tree[u].traceback_flag;
+            num_changes++;
+            tree[u].traceback_flag = -1;
         }
     }
+    for (j = 0; j < num_likelihood_nodes; j++) {
+        u = nodes[j];
+        if (tree[u].traceback_flag != tree[u].recombination_required) {
+            changed[num_changes] = u;
+            previous_flag[num_changes] = tree[u].traceback_flag;
+            num_changes++;
+            tree[u].traceback_flag = tree[u].recombination_required;
+        }
+    }
+    memcpy(stored_nodes, nodes, (size_t) num_likelihood_nodes * sizeof(*nodes));
+    self->num_traceback_nodes = num_likelihood_nodes;
 
-    if (match) {
-        T[site_id].size = T[site_id - 1].size;
-        T[site_id].node = T[site_id - 1].node;
-        T[site_id].recombination_required = T[site_id - 1].recombination_required;
-    } else {
-        list_node = tsi_blkalloc_get(&self->traceback_allocator,
-            aligned_size((size_t) num_likelihood_nodes * sizeof(tsk_id_t)));
-        list_R = tsi_blkalloc_get(&self->traceback_allocator,
-            aligned_size((size_t) num_likelihood_nodes * sizeof(int8_t)));
-        if (list_node == NULL || list_R == NULL) {
+    delta->size = num_changes;
+    if (num_changes > 0) {
+        delta->node = tsi_blkalloc_get(&self->traceback_allocator,
+            aligned_size((size_t) num_changes * sizeof(tsk_id_t)));
+        delta->previous_flag = tsi_blkalloc_get(&self->traceback_allocator,
+            aligned_size((size_t) num_changes * sizeof(int8_t)));
+        if (delta->node == NULL || delta->previous_flag == NULL) {
             ret = TSLS_ERR_NO_MEMORY;
             goto out;
         }
-        T[site_id].node = list_node;
-        T[site_id].recombination_required = list_R;
-        T[site_id].size = num_likelihood_nodes;
-        for (j = 0; j < num_likelihood_nodes; j++) {
-            u = nodes[j];
-            list_node[j] = u;
-            list_R[j] = tree[u].recombination_required;
-        }
+        memcpy(delta->node, changed, (size_t) num_changes * sizeof(*changed));
+        memcpy(delta->previous_flag, previous_flag,
+            (size_t) num_changes * sizeof(*previous_flag));
     }
     self->total_traceback_size += (size_t) num_likelihood_nodes;
 out:
@@ -1660,39 +1666,27 @@ out:
     return ret;
 }
 
-/* Resets the recombination_required array from the traceback at the specified site.
- */
+/* Undo the changes to the traceback flags made at the specified site, so
+ * that they are the flags stored at the previous site. */
 static inline void
-tsls_hmm_set_recombination_required(
-    tsls_hmm_t *self, tsk_id_t site, tsls_node_t *restrict tree)
+tsls_hmm_undo_traceback_delta(
+    const tsls_hmm_t *self, tsk_id_t site, tsls_node_t *restrict tree)
 {
     int j;
-    const int8_t *restrict list_R = self->traceback[site].recombination_required;
-    const tsk_id_t *restrict list_node = self->traceback[site].node;
-    const int size = self->traceback[site].size;
+    const traceback_delta_t *delta = &self->traceback[site];
+    const tsk_id_t *restrict node = delta->node;
+    const int8_t *restrict previous_flag = delta->previous_flag;
 
-    for (j = 0; j < size; j++) {
-        tree[list_node[j]].recombination_required = list_R[j];
-    }
-}
-
-/* Unsets the likelihood array from the traceback at the specified site.
- */
-static inline void
-tsls_hmm_unset_recombination_required(
-    tsls_hmm_t *self, tsk_id_t site, tsls_node_t *restrict tree)
-{
-    int j;
-    const tsk_id_t *restrict list_node = self->traceback[site].node;
-    const int size = self->traceback[site].size;
-
-    for (j = 0; j < size; j++) {
-        tree[list_node[j]].recombination_required = -1;
+    for (j = 0; j < delta->size; j++) {
+        tree[node[j]].traceback_flag = previous_flag[j];
     }
 }
 
 /* Run the traceback over sites [start, end), moving right-to-left through
- * the trees. Only the parent array of the tree is needed. */
+ * the trees. Only the parent array of the tree is needed. The traceback
+ * flags start as stored at the last site, and each site's changes are
+ * undone after it is processed, so that they are all unset (-1) again at
+ * the end. */
 static int WARN_UNUSED
 tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     allele_t *restrict match, size_t *path_length_out, double *restrict path_left,
@@ -1730,7 +1724,6 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     for (u = 0; u < virtual_root; u++) {
         tree[u].parent = virtual_root;
         tree[u].allelic_state = TSK_NULL;
-        tree[u].recombination_required = -1;
     }
     tree[virtual_root].parent = NULL_NODE;
     x = sites_position[end - 1];
@@ -1768,17 +1761,14 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
         tsls_hmm_clear_allelic_state(self, site);
         u = path_parent[path_length];
 
-        /* Mark the traceback nodes on the tree */
-        tsls_hmm_set_recombination_required(self, site, tree);
-
-        /* Traverse up the tree from the current node. The first marked
-         * node that we meet tells us whether we need to recombine. Every
-         * root has a likelihood, and so is marked. */
-        while (tree[u].recombination_required == -1) {
+        /* Traverse up the tree from the current node. The first node in the
+         * traceback's set that we meet tells us whether we need to
+         * recombine. Every root has a likelihood, and so is in the set. */
+        while (tree[u].traceback_flag == -1) {
             u = tree[u].parent;
             assert(u != virtual_root);
         }
-        if (tree[u].recombination_required && site > start) {
+        if (tree[u].traceback_flag && site > start) {
             max_likelihood_node = self->max_likelihood_node[site - 1];
             assert(max_likelihood_node != NULL_NODE);
             path_left[path_length] = sites_position[site];
@@ -1787,8 +1777,7 @@ tsls_hmm_run_traceback(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
             path_right[path_length] = sites_position[site];
             path_parent[path_length] = max_likelihood_node;
         }
-        /* Unset the values in the tree for the next site. */
-        tsls_hmm_unset_recombination_required(self, site, tree);
+        tsls_hmm_undo_traceback_delta(self, site, tree);
     }
     path_left[path_length] = start_pos;
     path_length++;
@@ -1815,6 +1804,7 @@ tsls_hmm_reset_traceback(tsls_hmm_t *self)
     }
     self->total_traceback_size = 0;
     self->total_distinct_values = 0;
+    self->num_traceback_nodes = 0;
 out:
     return ret;
 }
