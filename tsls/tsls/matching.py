@@ -167,6 +167,12 @@ class Hmm(_tsls.Hmm):
     for all but the n nodes with the largest values. If ``count_distinct``
     is True, the mean number of distinct values per site in Viterbi is
     recorded in ``mean_num_distinct_values``.
+
+    By default, Viterbi processes a site sparsely when it can, recomputing
+    only the values that can change there (``num_sparse_sites`` counts these
+    sites in the last run). This finds a path with the same likelihood as
+    processing every site in full (``sparse=False``), but may choose a
+    different path among equally likely ones.
     """
 
     PRUNING_MODES = {"relative": 1, "top_n": 2}
@@ -183,12 +189,17 @@ class Hmm(_tsls.Hmm):
         extended_checks=False,
         pruning=None,
         count_distinct=False,
+        sparse=True,
     ):
         if not isinstance(ts, TreeSequence):
             ts = TreeSequence(ts, alleles=alleles)
         elif alleles is not None:
             raise ValueError("Specify alleles when making the tsls.TreeSequence")
-        kwargs = {"extended_checks": extended_checks, "count_distinct": count_distinct}
+        kwargs = {
+            "extended_checks": extended_checks,
+            "count_distinct": count_distinct,
+            "sparse": sparse,
+        }
         if pruning is not None:
             mode, parameter = pruning
             if mode not in self.PRUNING_MODES:

@@ -51,13 +51,14 @@ WORKLOADS = [
 ]
 
 
-def make_engine(name, ts, model):
+def make_engine(name, ts, model, mismatch_threshold=None):
     return engines.ENGINES[name](
         ts,
         mu=model["mu"],
         rho=model["rho"],
         weight_by_n=model["weight_by_n"],
         alleles=model["alleles"],
+        mismatch_threshold=mismatch_threshold,
     )
 
 

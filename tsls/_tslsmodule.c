@@ -231,9 +231,10 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     int pruning_mode = TSLS_PRUNE_NONE;
     double pruning_parameter = 0;
     int count_distinct = 0;
+    int sparse = 1;
     static char *kwlist[] = { "tree_sequence", "recombination", "mismatch",
         "extended_checks", "likelihood_threshold", "weight_by_n", "pruning_mode",
-        "pruning_parameter", "count_distinct", NULL };
+        "pruning_parameter", "count_distinct", "sparse", NULL };
     TreeSequence *tree_sequence = NULL;
     PyObject *recombination = NULL;
     PyObject *mismatch = NULL;
@@ -246,10 +247,10 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
 
     self->hmm = NULL;
     self->tree_sequence = NULL;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|idiidi", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|idiidii", kwlist,
             &TreeSequenceType, &tree_sequence, &recombination, &mismatch,
             &extended_checks, &likelihood_threshold, &weight_by_n, &pruning_mode,
-            &pruning_parameter, &count_distinct)) {
+            &pruning_parameter, &count_distinct, &sparse)) {
         goto out;
     }
     self->tree_sequence = tree_sequence;
@@ -294,6 +295,9 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     }
     if (count_distinct) {
         flags |= TSLS_COUNT_DISTINCT;
+    }
+    if (!sparse) {
+        flags |= TSLS_DISABLE_SPARSE;
     }
     err = tsls_hmm_alloc(self->hmm, self->tree_sequence->index,
         PyArray_DATA(recombination_array), PyArray_DATA(mismatch_array),
@@ -661,55 +665,6 @@ out:
 }
 
 static PyObject *
-Hmm_get_traceback(Hmm *self, PyObject *args)
-{
-    PyObject *ret = NULL;
-    unsigned long site;
-    node_state_list_t *list;
-    PyObject *dict = NULL;
-    PyObject *key = NULL;
-    PyObject *value = NULL;
-    int j;
-
-    if (Hmm_check_state(self) != 0) {
-        goto out;
-    }
-    if (!PyArg_ParseTuple(args, "k", &site)) {
-        goto out;
-    }
-    if (site >= self->hmm->num_sites) {
-        PyErr_SetString(PyExc_ValueError, "site out of range");
-        goto out;
-    }
-    dict = PyDict_New();
-    if (dict == NULL) {
-        goto out;
-    }
-    list = &self->hmm->traceback[site];
-    for (j = 0; j < list->size; j++) {
-        key = Py_BuildValue("k", (unsigned long) list->node[j]);
-        value = Py_BuildValue("i", (int) list->recombination_required[j]);
-        if (key == NULL || value == NULL) {
-            goto out;
-        }
-        if (PyDict_SetItem(dict, key, value) != 0) {
-            goto out;
-        }
-        Py_DECREF(key);
-        key = NULL;
-        Py_DECREF(value);
-        value = NULL;
-    }
-    ret = dict;
-    dict = NULL;
-out:
-    Py_XDECREF(key);
-    Py_XDECREF(value);
-    Py_XDECREF(dict);
-    return ret;
-}
-
-static PyObject *
 Hmm_get_mean_traceback_size(Hmm *self, void *closure)
 {
     PyObject *ret = NULL;
@@ -719,6 +674,19 @@ Hmm_get_mean_traceback_size(Hmm *self, void *closure)
     }
     ret = Py_BuildValue(
         "d", tsls_hmm_get_mean_traceback_size(self->hmm));
+out:
+    return ret;
+}
+
+static PyObject *
+Hmm_get_num_sparse_sites(Hmm *self, void *closure)
+{
+    PyObject *ret = NULL;
+
+    if (Hmm_check_state(self) != 0) {
+        goto out;
+    }
+    ret = Py_BuildValue("n", (Py_ssize_t) self->hmm->num_sparse_sites);
 out:
     return ret;
 }
@@ -762,6 +730,8 @@ out:
 static PyGetSetDef Hmm_getsetters[] = {
     { "mean_traceback_size", (getter) Hmm_get_mean_traceback_size, NULL,
         "The mean size of the traceback per site." },
+    { "num_sparse_sites", (getter) Hmm_get_num_sparse_sites, NULL,
+        "The number of sites processed sparsely in the last Viterbi run." },
     { "mean_num_distinct_values",
         (getter) Hmm_get_mean_num_distinct_values, NULL,
         "The mean number of distinct likelihood values per site in the last "
@@ -784,8 +754,6 @@ static PyMethodDef Hmm_methods[] = {
     { "backward_matrix", (PyCFunction) Hmm_backward_matrix,
         METH_VARARGS | METH_KEYWORDS,
         "Runs the backward algorithm and returns the compressed matrix arrays." },
-    { "get_traceback", (PyCFunction) Hmm_get_traceback, METH_VARARGS,
-        "Returns the traceback likelihood dictionary at the specified site." },
     { NULL } /* Sentinel */
 };
 

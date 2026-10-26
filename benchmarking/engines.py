@@ -78,6 +78,48 @@ def path_log_likelihood(h, num_segments, matched, mu, rho):
     )
 
 
+def site_num_alleles(ts, alleles):
+    """
+    Return the number of alleles at each site, as the engines count them for
+    the emission probabilities: the number of alleles if a list is given,
+    and otherwise the distinct states at the site, with at least 2.
+    """
+    if alleles is not None:
+        return np.full(ts.num_sites, len(alleles))
+    num_alleles = np.zeros(ts.num_sites, dtype=int)
+    for site in ts.sites():
+        states = {site.ancestral_state} | {m.derived_state for m in site.mutations}
+        num_alleles[site.id] = max(2, len(states))
+    return num_alleles
+
+
+def model_path_log_likelihood(
+    h, matched, left, positions, start, end, *, rho, mu, n, num_alleles
+):
+    """
+    Return the log likelihood of a Viterbi path over sites [start, end)
+    under the engines' model, with per-site rates: a switch at a site has
+    probability rho / n, staying has probability 1 - rho + rho / n, and
+    the emission is 1 - (A - 1) mu for a match (or missing data) and mu for
+    a mismatch, where A is the number of alleles at the site. left holds the
+    left coordinates of the path's segments; each one after the first is
+    the position of a site at which the path switches. The initial
+    probability is the same for every path and is left out.
+    """
+    sites = np.arange(start, end)
+    switch = np.isin(positions[sites], np.asarray(left)[1:])
+    switch[0] = False
+    rho = rho[sites]
+    stay = np.log(1 - rho + rho / n)
+    transition = np.where(switch, np.log(rho / n), stay)
+    transition[0] = 0
+    mu = mu[sites]
+    hs = h[sites]
+    match = (hs == MISSING) | (hs == matched[sites])
+    emission = np.where(match, np.log(1 - (num_alleles[sites] - 1) * mu), np.log(mu))
+    return float(np.sum(transition) + np.sum(emission))
+
+
 def path_to_segments(path, positions, sequence_length):
     """
     Convert a per-site array of node IDs into the (left, right, parent)

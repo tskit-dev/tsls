@@ -602,3 +602,83 @@ two full runs alternating with the then-current build:
 - The two records now used: no consistent difference from separate arrays
   before huge pages, but faster on the late groups and samples with them
   (above).
+
+## Algorithmic changes: memoised walks, delta traceback, sparse sites
+
+After the refactor, tsls was level with or slower than tsinfer-hmm on
+sc2ts. `paired.py` now also times sc2ts sub-ARGs (see its docstring):
+`sc2ts_n100k_k1` (10 queries with sc2ts's k = 1 likelihood threshold, as in
+its first matching passes), `sc2ts_n100k` (the same queries, exact) and
+`sc2ts_n300k` (4 queries, exact). A path that differs from tsinfer-hmm's
+is classed by its model log likelihood as a tie, better or worse.
+
+Three changes, each recorded in its commit with measurements and dead
+ends:
+
+1. **Memoised allele walk** (`e399d67`). Finding each likelihood node's
+   allele walked up to a mutation or root from every node, so the cost
+   was the sum of the path lengths: about 40% of `find_path` on sc2ts and
+   58% on a tsinfer sample. Walks now leave the state on the nodes they
+   pass, so the cost is the size of the union of the paths.
+2. **Delta traceback** (`ce0334a`). Each site stores only the nodes whose
+   recombination flag changed, or that entered or left the list, with
+   their previous flags; the traceback undoes them right to left.
+3. **Sparse sites** (`c81ac3b`). On sc2ts only about 6 of hundreds to
+   thousands of stored values change per site. Once the previous site's
+   maximum likelihood node matches the query, every matching node goes
+   through the same map as before, so only nodes that mismatch, or changed
+   at the previous site, need recomputing. When a tree spans enough
+   sites, its nodes are numbered in preorder, so the nodes under each
+   mutation are a range of the (sorted) likelihood list. Other sites, and
+   tsinfer, whose trees change about every second site, are processed in
+   full. `Hmm(sparse=False)` turns this off.
+
+Paired wall time, tsls / tsinfer-hmm, two full runs of each build in
+alternation:
+
+| workload | before (3868de8) | + memoised walk | + delta traceback | + sparse sites |
+|---|---|---|---|---|
+| ancestors, group 84 | 0.76, 0.75 | 0.78, 0.78 | 0.78, 0.77 | 0.78, 0.75 |
+| ancestors, group 1000 | 0.82, 0.74 | 0.71, 0.71 | 0.72, 0.70 | 0.73, 0.74 |
+| ancestors, group 1483 | 0.91, 0.76 | 0.81, 0.68 | 0.73, 0.68 | 0.73, 0.72 |
+| ancestors, group 1484 | 0.91, 0.74 | 0.75, 0.68 | 0.71, 0.67 | 0.73, 0.69 |
+| ancestors, group 1485 | 0.98, 0.90 | 0.78, 0.69 | 0.84, 0.84 | 0.89, 0.72 |
+| samples | 1.14, 0.80 | 0.76, 0.57 | 0.55, 0.55 | 0.58, 0.56 |
+| sc2ts 100k, k = 1 | 1.05, 1.02 | 0.87, 0.85 | 0.84, 0.81 | 0.017, 0.017 |
+| sc2ts 100k, exact | 1.09, 1.06 | 0.88, 0.86 | 0.82, 0.80 | 0.012, 0.012 |
+| sc2ts 300k, exact | 1.00, 0.95 | 0.79, 0.73 | 0.69, 0.69 | 0.051, 0.048 |
+
+(The tsinfer rows of the last column are from the final build, run
+alternately with the delta build; the delta column there is from the
+four-build runs.)
+
+- On sc2ts, tsls is now 20-80 times faster than tsinfer-hmm: the 10 exact
+  100k queries take 0.75 s against 63 s.
+- On tsinfer, the memoised walk gives most of the gain; tsls takes
+  0.56-0.75 of tsinfer-hmm's time on the late groups and samples.
+- Traceback memory falls from 64 MiB (tsinfer) and up to 1.8 GB (sc2ts
+  300k) to 4-12 MiB, the allocator's smallest block.
+- Paths are identical to tsinfer-hmm's on every tsinfer query. On sc2ts,
+  sparse sites can break ties differently: 5 of 24 queries took a
+  different path with the same likelihood, and one k = 1 query took a
+  path with 9 more mismatches, which ties in the floored values (the
+  floor erases how many mismatches a node has made; see `c81ac3b`).
+
+### Full sc2ts ARG
+
+One run each, k = 1 threshold, on the full benchmark ARG (3.4M nodes,
+510 trees, 29,565 sites):
+
+| query | tsls (s) | tsinfer-hmm (s) | ratio | sparse sites | traceback memory (MiB), tsls / tsinfer-hmm |
+|---|---|---|---|---|---|
+| 0 | 4.3 | 8.3 | 0.51 | 1,229 | 26 / 320 |
+| 11 | 27.3 | 104.1 | 0.26 | 4,091 | 26 / 2,240 |
+| 22 | 33.6 | 106.7 | 0.31 | 4,093 | 26 / 2,368 |
+
+Paths are the same as tsinfer-hmm's. The gain is much smaller than on
+the sub-ARGs because few sites are sparse: trees span about 58 sites
+here, against about 1,100 on the 300k sub-ARG, and numbering a tree costs
+time in proportion to all 3.4M nodes, so most trees aren't numbered.
+Numbering 16 times more eagerly made more sites sparse (6,490 and 9,780
+for queries 11 and 22) but was slower (35 and 40 s), so numbering whole
+trees is the limit at this scale.
