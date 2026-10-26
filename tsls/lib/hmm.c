@@ -180,20 +180,47 @@ insert_edge(tsk_id_t p, tsk_id_t c, tsls_node_t *restrict tree,
 /* Returns the allelic state of node u, given a tree in which the nodes with
  * mutations at the current site have their allelic states set and the roots
  * are marked with ROOT_ALLELE, so the walk up the tree doesn't need to
- * check for the root. This is the innermost loop of the HMM, so there is
- * deliberately no assert here (the Python module is compiled with asserts
- * on); the marks are checked in tsls_hmm_check_state. */
-static inline allele_t
-get_marked_allelic_state(
-    const tsls_node_t *restrict tree, tsk_id_t u, allele_t ancestral_state)
+ * check for the root. Every node on the path from u is also given the state
+ * found, so that later walks through the path stop there, and recorded in
+ * touched so that clear_touched_allelic_state can unset them. Looking up
+ * the states of many nodes then costs the size of the union of their paths
+ * up to a mutation or root, rather than the sum of the path lengths. Only
+ * nodes without a state are written, so the touched nodes are never roots
+ * or mutation nodes, and each is touched at most once. This is the
+ * innermost loop of the HMM, so there is deliberately no assert here (the
+ * Python module is compiled with asserts on); the marks are checked in
+ * tsls_hmm_check_state. */
+static ALWAYS_INLINE allele_t
+get_memoised_allelic_state(tsls_node_t *restrict tree, tsk_id_t u,
+    allele_t ancestral_state, tsk_id_t *restrict touched, int *num_touched)
 {
     allele_t state;
+    tsk_id_t v = u;
+    int n = *num_touched;
 
-    while (tree[u].allelic_state == TSK_NULL) {
+    while (tree[v].allelic_state == TSK_NULL) {
+        v = tree[v].parent;
+    }
+    state = tree[v].allelic_state;
+    while (u != v) {
+        tree[u].allelic_state = state;
+        touched[n] = u;
+        n++;
         u = tree[u].parent;
     }
-    state = tree[u].allelic_state;
+    *num_touched = n;
     return likely(state != ROOT_ALLELE) ? state : ancestral_state;
+}
+
+static inline void
+clear_touched_allelic_state(
+    tsls_node_t *restrict tree, const tsk_id_t *restrict touched, int num_touched)
+{
+    int j;
+
+    for (j = 0; j < num_touched; j++) {
+        tree[touched[j]].allelic_state = TSK_NULL;
+    }
 }
 
 /* Position the specified null tree position at the tree containing x,
@@ -1372,6 +1399,8 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     const double n = tsls_hmm_get_n(self);
     const double num_alleles = (double) self->index->num_alleles[site];
     const allele_t ancestral_state = self->index->ancestral_state[site];
+    tsk_id_t *restrict touched = self->likelihood_nodes_tmp;
+    int num_touched = 0;
     double max_L, p_no_recomb, p_recomb, p_t, p_e;
     tsk_id_t u, max_L_node;
     int j;
@@ -1392,7 +1421,9 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
             tree[u].recombination_required = true;
         }
         p_e = emission_probability(
-            get_marked_allelic_state(tree, u, ancestral_state), state,
+            get_memoised_allelic_state(
+                tree, u, ancestral_state, touched, &num_touched),
+            state,
             mu, num_alleles);
         L[u].value = p_t * p_e;
         if (L[u].value > max_L) {
@@ -1400,6 +1431,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
             max_L_node = u;
         }
     }
+    clear_touched_allelic_state(tree, touched, num_touched);
     tsls_hmm_unset_allelic_state(self, site);
     (void) num_likelihood_nodes;
 
@@ -1457,6 +1489,8 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
     const double n = tsls_hmm_get_n(self);
     const double num_alleles = (double) self->index->num_alleles[site];
     const allele_t ancestral_state = self->index->ancestral_state[site];
+    tsk_id_t *restrict touched = self->likelihood_nodes_tmp;
+    int num_touched = 0;
     double total, normalisation_factor, p_e;
     tsk_id_t u;
     int j;
@@ -1471,10 +1505,13 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
         p_e = emission_probability(
-            get_marked_allelic_state(tree, u, ancestral_state), state,
+            get_memoised_allelic_state(
+                tree, u, ancestral_state, touched, &num_touched),
+            state,
             mu, num_alleles);
         L[u].value = (L[u].value * (1 - rho) + rho / n * total) * p_e;
     }
+    clear_touched_allelic_state(tree, touched, num_touched);
     tsls_hmm_unset_allelic_state(self, site);
     normalisation_factor = tsls_hmm_total_likelihood(self);
     if (!(normalisation_factor > 0)) {
@@ -1521,6 +1558,8 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
     const double n = tsls_hmm_get_n(self);
     const double num_alleles = (double) self->index->num_alleles[site];
     const allele_t ancestral_state = self->index->ancestral_state[site];
+    tsk_id_t *restrict touched = self->likelihood_nodes_tmp;
+    int num_touched = 0;
     double x;
     tsk_id_t u;
     int j;
@@ -1545,9 +1584,12 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
         L[u].value *= emission_probability(
-            get_marked_allelic_state(tree, u, ancestral_state), state,
+            get_memoised_allelic_state(
+                tree, u, ancestral_state, touched, &num_touched),
+            state,
             mu, num_alleles);
     }
+    clear_touched_allelic_state(tree, touched, num_touched);
     tsls_hmm_unset_allelic_state(self, site);
     transition->pending = true;
     transition->total = tsls_hmm_total_likelihood(self);
