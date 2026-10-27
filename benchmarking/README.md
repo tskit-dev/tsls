@@ -133,11 +133,21 @@ likelihood `rho / n`. The engines differ in what `n` is:
 
 - tsinfer-hmm, run with `weight_by_n=False` as in sc2ts, uses `n = 1`.
 - tskit-hmm uses `n = num_samples`.
+- tsls always uses `n = num_nodes` (see `docs/likelihood_model.md`).
 
 Likelihoods are renormalised at every site, so only the ratio of
 switching to staying matters. A tsinfer `rho` of `r` is therefore
-equivalent to a tskit `rho` of `r / (r + (1 - r) / n)`. With this
-conversion, both engines optimise the same objective.
+equivalent to a `rho` of `r / (r + (1 - r) / n)` in an engine that divides
+by `n` (`tsls.model.recombination_probability(r, n)`). With this
+conversion, the engines optimise the same objective. The model dicts give
+`rho` and `weight_by_n` as tsinfer-hmm takes them, and the tsls engine
+converts them.
+
+With a mismatch threshold of k, tsinfer-hmm floors the normalised values
+at `0.99 mu^k`, as sc2ts does. tsls instead prunes nodes below the exact
+threshold for k mismatches (`tsls.model.path_threshold`). This is
+guaranteed to find an optimal path whenever an optimal path has at most k
+mismatches and no switches.
 
 `mu` and `r` are chosen as sc2ts does (`solve_num_mismatches`), so that
 `--num-mismatches` mismatches (default 3) cost about the same as one

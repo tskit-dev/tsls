@@ -13,14 +13,17 @@ returning the (left, right, parent, matched, stats) tuple:
 
 Model parameters
 ----------------
-Both engines use the same Viterbi recursion: at each site the likelihood
+The engines use the same Viterbi recursion: at each site the likelihood
 of staying on a node is p_last * (1 - rho + rho / n), and of switching
 is rho / n. tsinfer-hmm with weight_by_n=False uses n = 1, as sc2ts does,
-while tskit-hmm uses n = num_samples. Because the likelihoods are
-renormalised at every site, only the ratio of switching to staying
-matters, so the tskit rho that gives the same model as a tsinfer rho r
-is r / (r + (1 - r) / n). We choose r as sc2ts does, so that k mismatches
-cost about the same as one recombination.
+while tskit-hmm uses n = num_samples and tsls n = num_nodes. Because the
+likelihoods are renormalised at every site, only the ratio of switching to
+staying (the switch odds) matters, so an engine dividing by n gives the
+same model as a tsinfer rho r with r / (r + (1 - r) / n) (see
+docs/likelihood_model.md and tsls.model.recombination_probability). We
+choose r as sc2ts does, so that k mismatches cost about the same as one
+recombination. The model dicts give rho and weight_by_n as tsinfer-hmm
+takes them.
 
 The engines still differ in what they can copy from: tsinfer-hmm can copy
 any node, while tskit-hmm can only copy samples.
@@ -51,14 +54,6 @@ def solve_num_mismatches(k, num_alleles=4):
     rho += rho * 0.1
     rho = max(rho, 1e-200)
     return mu, rho
-
-
-def n_weighted_rho(rho, n):
-    """
-    Return the rho for an engine that divides rho by n that gives the same
-    Viterbi path as the specified rho in an engine that does not.
-    """
-    return rho / (rho + (1 - rho) / n)
 
 
 def path_log_likelihood(h, num_segments, matched, mu, rho):
@@ -151,10 +146,13 @@ class AncestorMatcherEngine:
     which differ only in how the shared reference (tsinfer's MatcherIndexes
     or a tsls TreeSequence) and the per-query matcher are made.
 
-    If mismatch_threshold is specified, normalised likelihoods are not
-    allowed to drop below that of mismatch_threshold mismatches, as in
-    sc2ts. This bounds the number of distinct likelihood values, and so
-    the time and memory needed, at the cost of exactness.
+    If mismatch_threshold is specified, tsinfer-hmm does not allow
+    normalised likelihoods to drop below 0.99 mu^k, with k =
+    mismatch_threshold, as in sc2ts. This bounds the number of distinct
+    likelihood values, and so the time and memory needed, at the cost of
+    exactness. tsls instead prunes nodes below the exact threshold for k
+    mismatches (tsls.model.path_threshold), which finds an optimal path if
+    one has at most k mismatches and no switches.
 
     By default, states are encoded as indexes into ALLELES. If alleles is
     None, the ancestral state of every site is 0 and every mutation has
@@ -177,9 +175,7 @@ class AncestorMatcherEngine:
         self.mu = mu
         self.rho = rho
         self.weight_by_n = weight_by_n
-        self.likelihood_threshold = None
-        if mismatch_threshold is not None:
-            self.likelihood_threshold = mu**mismatch_threshold * 0.99
+        self.mismatch_threshold = mismatch_threshold
         self.recombination = np.full(ts.num_sites, rho)
         self.mismatch = np.full(ts.num_sites, mu)
         self.alleles = alleles
@@ -221,11 +217,14 @@ class TsinferEngine(AncestorMatcherEngine):
         return tsinfer_hmm.MatcherIndexes(ts, vestigial_root=False, alleles=alleles)
 
     def make_matcher(self):
+        likelihood_threshold = None
+        if self.mismatch_threshold is not None:
+            likelihood_threshold = self.mu**self.mismatch_threshold * 0.99
         return tsinfer_hmm.AncestorMatcher(
             self.reference,
             self.recombination,
             self.mismatch,
-            likelihood_threshold=self.likelihood_threshold,
+            likelihood_threshold=likelihood_threshold,
             weight_by_n=self.weight_by_n,
         )
 
@@ -239,7 +238,7 @@ class TskitEngine:
         self.num_samples = ts.num_samples
         self.mu = mu
         self.unweighted_rho = rho
-        self.rho = n_weighted_rho(rho, ts.num_samples)
+        self.rho = float(tsls.model.recombination_probability(rho, ts.num_samples))
         self.ll_ts = tskit_hmm.ll_tree_sequence(ts)
         self.ls_hmm = _tskit_hmm.LsHmm(
             self.ll_ts,
@@ -295,15 +294,28 @@ class TslsEngine(AncestorMatcherEngine):
     def make_reference(self, ts, alleles):
         tables = ts.dump_tables()
         tables.edges.keep_rows(tables.edges.parent != 0)
-        return tsls.TreeSequence(tables.tree_sequence(), alleles=alleles)
+        reference = tsls.TreeSequence(tables.tree_sequence(), alleles=alleles)
+        # tsls always divides by n, so give tsinfer's weight_by_n=False
+        # model by its switch odds
+        if not self.weight_by_n:
+            self.recombination = tsls.model.recombination_probability(
+                self.recombination, ts.num_nodes
+            )
+        self.prune_threshold = None
+        if self.mismatch_threshold is not None:
+            self.prune_threshold = tsls.model.path_threshold(
+                self.mismatch_threshold,
+                self.mismatch,
+                site_num_alleles(ts, alleles),
+            )
+        return reference
 
     def make_matcher(self):
         return tsls.Hmm(
             self.reference,
             self.recombination,
             self.mismatch,
-            likelihood_threshold=self.likelihood_threshold,
-            weight_by_n=self.weight_by_n,
+            prune_threshold=self.prune_threshold,
         )
 
 

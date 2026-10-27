@@ -19,11 +19,11 @@ There are two kinds of workload:
   The "_k1" workloads use the k = 1 threshold, and the others are exact.
 
 Paths are checked against tsinfer-hmm's: a different path must have the
-same log likelihood under the model (a tie). With a likelihood threshold
-(the "_k1" workloads), Viterbi optimises the floored values instead, in
-which nodes with different numbers of mismatches can tie, so a path that
-differs only in how such a tie is broken may be reported as better or
-worse.
+same log likelihood under the model (a tie). With a mismatch threshold
+(the "_k1" workloads), tsinfer-hmm optimises floored values, in which
+nodes with different numbers of mismatches can tie. tsls prunes at the
+exact threshold instead (see engines.AncestorMatcherEngine), so it may
+report a better path.
 """
 
 import dataclasses
