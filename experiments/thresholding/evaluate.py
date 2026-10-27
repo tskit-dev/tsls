@@ -201,11 +201,19 @@ def viterbi_strategies(r, mu, num_alleles, n, quick):
     return out
 
 
-def fb_strategies(quick):
+def fb_strategies(r, n, quick):
+    """
+    Return the list of (strategy, parameter, Hmm kwargs) tuples for forward
+    and backward. relative_q drops nodes below c q times the maximum, where
+    q is the smallest switch odds: such a node has less mass than
+    recombination alone gives every node (as a fraction of the maximum).
+    """
     floors = FLOORS[1:] if quick else FLOORS
+    q = float(np.min(tsls.model.switch_odds(r, n)))
     out = [("exact", np.nan, {})]
     out += [("floor", t, {"likelihood_threshold": t}) for t in floors]
     out += [("relative", t, {"pruning": ("relative", t)}) for t in floors]
+    out += [("relative_q", c, {"pruning": ("relative", c * q)}) for c in [0.01, 1]]
     out += [("top_n", k, {"pruning": ("top_n", k)}) for k in [10, 100, 1000]]
     return out
 
@@ -382,13 +390,27 @@ def posterior_sites(wts):
 def posteriors(fm, bm, sites, trees):
     """
     Return the list of (unnormalised mass, normalised posterior) at the sites.
+    If forward and backward have no mass on any common node (pruning can do
+    this), the posterior is None.
     """
     out = []
     for site, tree in zip(sites, trees):
         p = decode_site(fm, tree, site) * decode_site(bm, tree, site)
         mass = np.sum(p)
-        out.append((mass, p / mass))
+        out.append((mass, p / mass if mass > 0 and np.isfinite(mass) else None))
     return out
+
+
+def compare_posterior(p, q):
+    """
+    Return the (TV, max abs error, argmax agrees) of p against the exact q.
+    A missing posterior counts as wholly wrong.
+    """
+    if p is None:
+        return 1.0, float(np.max(q)), False
+    return 0.5 * float(np.sum(np.abs(p - q))), float(np.max(np.abs(p - q))), bool(
+        np.argmax(p) == np.argmax(q)
+    )
 
 
 def fb_rows(base, ts, alleles, r, mu, h, start, end, viterbi_path, quick):
@@ -399,7 +421,7 @@ def fb_rows(base, ts, alleles, r, mu, h, start, end, viterbi_path, quick):
     viterbi_node = viterbi_path[a - start + sites]
     rows = []
     exact = None
-    for strategy, parameter, kwargs in fb_strategies(quick):
+    for strategy, parameter, kwargs in fb_strategies(rw, ts.num_nodes, quick):
         am = tsls.Hmm(wtree_sequence, rw, muw, **kwargs)
         before = time.perf_counter()
         fm = am.forward_matrix(hw)
@@ -414,9 +436,11 @@ def fb_rows(base, ts, alleles, r, mu, h, start, end, viterbi_path, quick):
         if exact is None:
             exact = (fm.log_likelihood, post, forward_time + backward_time,
                      np.mean(stored_f) + np.mean(stored_b))
-        tv = [0.5 * np.sum(np.abs(p - q)) for (_, p), (_, q) in zip(post, exact[1])]
-        max_abs = [np.max(np.abs(p - q)) for (_, p), (_, q) in zip(post, exact[1])]
-        argmax = [np.argmax(p) == np.argmax(q) for (_, p), (_, q) in zip(post, exact[1])]
+        compared = [compare_posterior(p, q) for (_, p), (_, q) in zip(post, exact[1])]
+        tv = [c[0] for c in compared]
+        max_abs = [c[1] for c in compared]
+        argmax = [c[2] for c in compared]
+        no_mass = sum(p is None for _, p in post)
         rows.append(
             {
                 **base,
@@ -438,12 +462,15 @@ def fb_rows(base, ts, alleles, r, mu, h, start, end, viterbi_path, quick):
                 "values_ratio": (np.mean(stored_f) + np.mean(stored_b)) / exact[3],
                 "log_likelihood_error": fm.log_likelihood - exact[0],
                 "mass_error": float(max(abs(mass - 1) for mass, _ in post)),
+                "no_mass_sites": no_mass,
                 "tv_mean": float(np.mean(tv)),
                 "tv_max": float(np.max(tv)),
                 "max_abs_error": float(np.max(max_abs)),
                 "argmax_agreement": float(np.mean(argmax)),
                 "posterior_viterbi_node": float(
-                    np.mean([p[u] for (_, p), u in zip(post, viterbi_node)])
+                    np.mean(
+                        [0 if p is None else p[u] for (_, p), u in zip(post, viterbi_node)]
+                    )
                 ),
             }
         )
@@ -595,8 +622,21 @@ def analyse():
     ).reset_index()
     lines += table(exact, list(exact.columns)) + [""]
 
+    lines += ["## Viterbi escalation", ""]
+    esc = v[v.strategy == "escalation"].groupby("label")
+    summary = pd.DataFrame(
+        {
+            "queries": esc.size(),
+            "time ratio": esc.time_ratio.mean(),
+            "certified at k": esc.parameter.apply(
+                lambda x: ", ".join(f"{k}: {c}" for k, c in x.value_counts().items())
+            ),
+            "optimal": esc.optimal.mean(),
+        }
+    ).reset_index()
+    lines += table(summary, list(summary.columns)) + [""]
     lines += ["## Viterbi strategies", ""]
-    for label, group in v[v.strategy != "exact"].groupby("label"):
+    for label, group in v[~v.strategy.isin(["exact", "escalation"])].groupby("label"):
         g = group.groupby(["strategy", "parameter"], dropna=False)
         summary = pd.DataFrame(
             {
@@ -635,6 +675,7 @@ def analyse():
                 "max abs error": g.max_abs_error.max(),
                 "mass error": g.mass_error.max(),
                 "argmax agree": g.argmax_agreement.mean(),
+                "no-mass sites": g.no_mass_sites.sum(),
             }
         ).reset_index()
         lines += [f"### {label}", ""] + table(summary, list(summary.columns)) + [""]
