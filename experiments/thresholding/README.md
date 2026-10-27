@@ -143,3 +143,32 @@ earlier runs: with sc2ts settings, `t* = ρ ≈ 2.4e-6`.
   Check the posterior total-variation distance for the intended use.
 - **Next step:** see `experiments/compression/`, which captures the exact
   per-site values and analyses alternative encodings.
+
+## Exact prune thresholds (`exact_thresholds.py`)
+
+`docs/likelihood_model.md` derives `Hmm(prune_threshold=t)`, with
+`t = tsls.model.path_threshold(k, ...)`. It finds an optimal path whenever
+one has at most k mismatches, and certifies a path as optimal if its odds
+are at least t. This replaces sc2ts's floor at `0.99 mu^k`, which is 6–15%
+below the exact `e^k`. It has no effect at k = 3, since it is below q.
+`exact_thresholds.py` compares the two on the 10 sc2ts scaling queries
+used by `paired.py`, against the 100k sub-ARG (r = 0.21 from sc2ts's
+q = 2.41e-6):
+
+| k | setting | time (s) | mean traceback | certified | optimal |
+|---|---|---|---|---|---|
+| | exact | 1.14 | 4761 | | 10/10 |
+| 0 | floor 0.99 mu^k | 0.50 | 979 | 1/10 | 5/10 |
+| 0 | prune e^k | 0.54 | 608 | 1/10 | 8/10 |
+| 1 | floor 0.99 mu^k | 0.83 | 2537 | 2/10 | 6/10 |
+| 1 | prune e^k | 0.84 | 1977 | 2/10 | 9/10 |
+| 2 | floor 0.99 mu^k | 0.92 | 4981 | 4/10 | 9/10 |
+| 2 | prune e^k | 0.93 | 4731 | 4/10 | 10/10 |
+| 3 | either | 0.95 | 4761 | 4/10 | 10/10 |
+
+The exact prune stores 20–40% fewer values than the floor at k = 0 and 1,
+for the same time, and finds the optimal path more often. Every certified
+path was optimal, with both methods. Only the prune guarantees this; the
+floor could certify a suboptimal path. The pruned uncertified runs are
+not guaranteed to be optimal, and the sc2ts escalation reruns them with a
+larger k.
