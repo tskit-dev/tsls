@@ -228,6 +228,15 @@ typedef struct {
     uint32_t *stamp;
     uint32_t current_stamp;
     size_t num_sparse_sites;
+    /* Statistics of the last run: over the sites processed, the total and
+     * maximum length of the likelihood list after each site, and the total
+     * number of nodes whose values were computed (site_num_updated, set by
+     * each site's processing) */
+    size_t stats_num_sites;
+    size_t stats_total_values;
+    size_t stats_max_values;
+    size_t stats_total_updated;
+    size_t site_num_updated;
     tsi_blkalloc_t traceback_allocator;
     size_t total_traceback_size;
     /* The total number of distinct likelihood values over sites, if
@@ -254,6 +263,8 @@ int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
 int tsls_hmm_set_pruning(tsls_hmm_t *self, int mode, double parameter);
 int tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold);
 int tsls_hmm_free(tsls_hmm_t *self);
+double tsls_hmm_get_mean_num_values(const tsls_hmm_t *self);
+double tsls_hmm_get_mean_num_updated(const tsls_hmm_t *self);
 int tsls_hmm_find_path(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     const allele_t *haplotype, allele_t *matched_haplotype, size_t *path_length,
     double *path_left, double *path_right, tsk_id_t *path_parent);

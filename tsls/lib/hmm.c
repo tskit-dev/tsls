@@ -1619,6 +1619,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
 
     tsls_hmm_insert_mutation_likelihoods(self, site);
     tsls_hmm_set_allelic_state(self, site);
+    self->site_num_updated = (size_t) self->num_likelihood_nodes;
     max_L = -1;
     max_L_node = NULL_NODE;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
@@ -1890,6 +1891,7 @@ tsls_hmm_process_site_sparse(tsls_hmm_t *self, const tsk_id_t site, const allele
     }
 
     /* Recompute the values, as tsls_hmm_process_site_viterbi does */
+    self->site_num_updated = (size_t) num_nodes;
     num_changed = 0;
     for (j = 0; j < num_nodes; j++) {
         u = nodes[j];
@@ -1972,6 +1974,7 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
 
     tsls_hmm_insert_mutation_likelihoods(self, site);
     tsls_hmm_compute_num_inheriting(self);
+    self->site_num_updated = (size_t) self->num_likelihood_nodes;
     total = *previous_total;
     if (total < 0) {
         total = tsls_hmm_total_likelihood(self);
@@ -2055,6 +2058,7 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
         goto out;
     }
     tsls_hmm_compute_num_inheriting(self);
+    self->site_num_updated = (size_t) self->num_likelihood_nodes;
     tsls_hmm_set_allelic_state(self, site);
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
@@ -2095,6 +2099,10 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
     int handled;
 
     tsk_tree_position_init(&tp, self->tree_sequence, 0);
+    self->stats_num_sites = 0;
+    self->stats_total_values = 0;
+    self->stats_max_values = 0;
+    self->stats_total_updated = 0;
     for (site = start; site < end; site++) {
         ret = check_haplotype_state(self, site, haplotype[site]);
         if (ret != 0) {
@@ -2172,6 +2180,11 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
         if (ret != 0) {
             goto out;
         }
+        self->stats_num_sites++;
+        self->stats_total_values += (size_t) self->num_likelihood_nodes;
+        self->stats_max_values
+            = TSK_MAX(self->stats_max_values, (size_t) self->num_likelihood_nodes);
+        self->stats_total_updated += self->site_num_updated;
         self->num_removed_nodes = 0;
         if (self->current_stamp == UINT32_MAX) {
             memset(self->stamp, 0, (self->num_nodes + 1) * sizeof(*self->stamp));
@@ -2440,6 +2453,24 @@ tsls_hmm_get_mean_num_distinct_values(tsls_hmm_t *self)
         return 0;
     }
     return (double) self->total_distinct_values / ((double) self->num_sites);
+}
+
+double
+tsls_hmm_get_mean_num_values(const tsls_hmm_t *self)
+{
+    if (self->stats_num_sites == 0) {
+        return 0;
+    }
+    return (double) self->stats_total_values / (double) self->stats_num_sites;
+}
+
+double
+tsls_hmm_get_mean_num_updated(const tsls_hmm_t *self)
+{
+    if (self->stats_num_sites == 0) {
+        return 0;
+    }
+    return (double) self->stats_total_updated / (double) self->stats_num_sites;
 }
 
 size_t

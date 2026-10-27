@@ -681,6 +681,45 @@ out:
 }
 
 static PyObject *
+Hmm_get_mean_num_values(Hmm *self, void *closure)
+{
+    PyObject *ret = NULL;
+
+    if (Hmm_check_state(self) != 0) {
+        goto out;
+    }
+    ret = Py_BuildValue("d", tsls_hmm_get_mean_num_values(self->hmm));
+out:
+    return ret;
+}
+
+static PyObject *
+Hmm_get_max_num_values(Hmm *self, void *closure)
+{
+    PyObject *ret = NULL;
+
+    if (Hmm_check_state(self) != 0) {
+        goto out;
+    }
+    ret = Py_BuildValue("n", (Py_ssize_t) self->hmm->stats_max_values);
+out:
+    return ret;
+}
+
+static PyObject *
+Hmm_get_mean_num_updated(Hmm *self, void *closure)
+{
+    PyObject *ret = NULL;
+
+    if (Hmm_check_state(self) != 0) {
+        goto out;
+    }
+    ret = Py_BuildValue("d", tsls_hmm_get_mean_num_updated(self->hmm));
+out:
+    return ret;
+}
+
+static PyObject *
 Hmm_get_num_sparse_sites(Hmm *self, void *closure)
 {
     PyObject *ret = NULL;
@@ -732,6 +771,12 @@ out:
 static PyGetSetDef Hmm_getsetters[] = {
     { "mean_traceback_size", (getter) Hmm_get_mean_traceback_size, NULL,
         "The mean size of the traceback per site." },
+    { "mean_num_values", (getter) Hmm_get_mean_num_values, NULL,
+        "The mean length of the likelihood list after each site in the last run" },
+    { "max_num_values", (getter) Hmm_get_max_num_values, NULL,
+        "The maximum length of the likelihood list after a site in the last run" },
+    { "mean_num_updated", (getter) Hmm_get_mean_num_updated, NULL,
+        "The mean number of node values computed per site in the last run" },
     { "num_sparse_sites", (getter) Hmm_get_num_sparse_sites, NULL,
         "The number of sites processed sparsely in the last Viterbi run." },
     { "mean_num_distinct_values",

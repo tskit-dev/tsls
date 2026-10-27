@@ -1044,3 +1044,44 @@ class TestSparse:
         )
         am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
         assert am.num_sparse_sites == 0
+
+
+class TestNodeStatistics:
+    def test_forward_backward_updated_match_stored(self):
+        ts = wright_fisher_ts(0, num_trees_hint=3)
+        A, present, _ = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        am = tsls.Hmm(ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES)
+        for h in noisy_queries(ts, A, present, 0):
+            fm = am.forward_matrix(h)
+            # Each site's values are stored before they are coalesced
+            assert am.mean_num_updated == pytest.approx(np.mean(np.diff(fm.offsets)))
+            assert 0 < am.mean_num_values <= am.max_num_values
+            assert am.max_num_values <= np.max(np.diff(fm.offsets))
+            bm = am.backward_matrix(h, fm.normalisation_factor)
+            assert am.mean_num_updated == pytest.approx(np.mean(np.diff(bm.offsets)))
+
+    def test_viterbi_sparse_updates_fewer(self):
+        ts = wright_fisher_ts(1, num_trees_hint=0)
+        A, present, _ = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        for h in noisy_queries(ts, A, present, 1):
+            stats = {}
+            for sparse in [True, False]:
+                am = tsls.Hmm(
+                    ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES, sparse=sparse
+                )
+                am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
+                stats[sparse] = (am.mean_num_updated, am.mean_num_values, am.num_sparse_sites)
+            if stats[True][2] > 0:
+                assert stats[True][0] < stats[False][0]
+            assert stats[False][0] >= stats[False][1]
+
+    def test_window_counts_sites(self):
+        ts = wright_fisher_ts(2, num_trees_hint=2)
+        m = ts.num_sites
+        am = tsls.Hmm(ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES)
+        assert am.mean_num_values == 0
+        h = np.zeros(m, dtype=np.int8)
+        am.find_path(h, 10, 20, np.zeros(m, dtype=np.int8))
+        assert am.max_num_values >= am.mean_num_values > 0

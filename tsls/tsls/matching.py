@@ -187,6 +187,11 @@ class Hmm(_tsls.Hmm):
     sites in the last run). This finds a path with the same likelihood as
     processing every site in full (``sparse=False``), but may choose a
     different path among equally likely ones.
+
+    After each run, ``mean_num_values`` and ``max_num_values`` give the
+    mean and maximum number of nodes with their own value (the likelihood
+    list) after each site, and ``mean_num_updated`` the mean number of node
+    values computed per site, which is less than the list for sparse sites.
     """
 
     PRUNING_MODES = {"relative": 1, "top_n": 2}
