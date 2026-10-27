@@ -62,12 +62,13 @@ def emission(A_site, h_site, mu, num_alleles):
 def forward(A, present, continuous, h, rho, mu, num_alleles, n, threshold=0):
     """
     Return the (F, c) tuple of normalised forward probabilities and
-    normalisation factors.
+    normalisation factors. We start from the uniform distribution over the
+    n nodes, of which the nodes not in the tree at the first site are lost.
     """
     m, N = A.shape
     F = np.zeros((m, N))
     c = np.zeros(m)
-    f = present[0].astype(float)
+    f = present[0] / n
     for j in range(m):
         total = np.sum(f)
         f = np.where(continuous[j], f, 0)

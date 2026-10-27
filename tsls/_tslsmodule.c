@@ -227,13 +227,12 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     int ret = -1;
     int err;
     int extended_checks = 0;
-    int weight_by_n = 1;
     int pruning_mode = TSLS_PRUNE_NONE;
     double pruning_parameter = 0;
     int count_distinct = 0;
     int sparse = 1;
     static char *kwlist[] = { "tree_sequence", "recombination", "mismatch",
-        "extended_checks", "likelihood_threshold", "weight_by_n", "pruning_mode",
+        "extended_checks", "likelihood_threshold", "prune_threshold", "pruning_mode",
         "pruning_parameter", "count_distinct", "sparse", NULL };
     TreeSequence *tree_sequence = NULL;
     PyObject *recombination = NULL;
@@ -242,14 +241,15 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     PyArrayObject *mismatch_array = NULL;
     npy_intp *shape;
     double likelihood_threshold = DBL_MIN;
+    double prune_threshold = 0;
     int flags = 0;
     size_t num_sites;
 
     self->hmm = NULL;
     self->tree_sequence = NULL;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|idiidii", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|iddidii", kwlist,
             &TreeSequenceType, &tree_sequence, &recombination, &mismatch,
-            &extended_checks, &likelihood_threshold, &weight_by_n, &pruning_mode,
+            &extended_checks, &likelihood_threshold, &prune_threshold, &pruning_mode,
             &pruning_parameter, &count_distinct, &sparse)) {
         goto out;
     }
@@ -290,9 +290,6 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     if (extended_checks) {
         flags |= TSLS_EXTENDED_CHECKS;
     }
-    if (!weight_by_n) {
-        flags |= TSLS_DISABLE_WEIGHT_BY_N;
-    }
     if (count_distinct) {
         flags |= TSLS_COUNT_DISTINCT;
     }
@@ -307,6 +304,11 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
         goto out;
     }
     err = tsls_hmm_set_pruning(self->hmm, pruning_mode, pruning_parameter);
+    if (err != 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = tsls_hmm_set_prune_threshold(self->hmm, prune_threshold);
     if (err != 0) {
         handle_library_error(err);
         goto out;

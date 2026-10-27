@@ -154,14 +154,28 @@ class Hmm(_tsls.Hmm):
     and mismatch probabilities. ``alleles`` is passed to tsls.TreeSequence,
     and can only be given with a tskit.TreeSequence.
 
+    At each site we recombine with the recombination probability r, and then
+    copy a node chosen uniformly from all the nodes of the tree sequence.
+    See docs/likelihood_model.md, and tsls.model for the conversions
+    between probabilities and the odds that Viterbi depends on. To specify
+    a recombination by its cost in mismatches, as sc2ts does, use
+    ``tsls.model.recombination_probability``.
+
     The states of the HMM at a given position are the nodes in the tree at
     that position: nodes with a parent or at least one child. Isolated
     nodes cannot be copied.
 
     Haplotypes are integer encoded, as described in tsls.TreeSequence.
 
+    In Viterbi, nodes whose values (normalised by the maximum at each site)
+    are below ``prune_threshold`` are dropped, and can only be reached again
+    by recombination. Any path whose odds relative to the best are at least
+    the threshold is kept: ``tsls.model.path_threshold`` gives the threshold
+    that finds the optimal path if it has at most k mismatches.
+
     After normalisation at each site, values below likelihood_threshold are
-    set to it. The experimental ``pruning`` option also sets the values of
+    set to it; it is there to avoid underflow, and should be well below the
+    switch odds. The experimental ``pruning`` option also sets the values of
     some nodes to likelihood_threshold: either ``("relative", f)``, for
     nodes with values less than f times the maximum, or ``("top_n", n)``,
     for all but the n nodes with the largest values. If ``count_distinct``
@@ -185,12 +199,20 @@ class Hmm(_tsls.Hmm):
         *,
         alleles=None,
         likelihood_threshold=None,
+        prune_threshold=None,
         weight_by_n=None,
         extended_checks=False,
         pruning=None,
         count_distinct=False,
         sparse=True,
     ):
+        if weight_by_n is not None:
+            raise ValueError(
+                "weight_by_n has been removed: recombination is always divided "
+                "by the number of nodes. For the weight_by_n=False model with "
+                "recombination rho, use tsls.model.recombination_probability"
+                "(rho, ts.num_nodes)"
+            )
         if not isinstance(ts, TreeSequence):
             ts = TreeSequence(ts, alleles=alleles)
         elif alleles is not None:
@@ -208,8 +230,8 @@ class Hmm(_tsls.Hmm):
             kwargs["pruning_parameter"] = parameter
         if likelihood_threshold is not None:
             kwargs["likelihood_threshold"] = likelihood_threshold
-        if weight_by_n is not None:
-            kwargs["weight_by_n"] = weight_by_n
+        if prune_threshold is not None:
+            kwargs["prune_threshold"] = prune_threshold
         self.tree_sequence = ts
         self.ts = ts.ts
         super().__init__(ts, recombination=recombination, mismatch=mismatch, **kwargs)

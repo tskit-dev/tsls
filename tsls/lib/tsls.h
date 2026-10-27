@@ -35,7 +35,6 @@
 
 /* Matcher flags */
 #define TSLS_EXTENDED_CHECKS     (1 << 0)
-#define TSLS_DISABLE_WEIGHT_BY_N (1 << 1)
 #define TSLS_COUNT_DISTINCT      (1 << 2)
 /* Process every Viterbi site in full (see tsls_hmm_process_site_sparse) */
 #define TSLS_DISABLE_SPARSE      (1 << 3)
@@ -176,6 +175,9 @@ typedef struct {
     double likelihood_threshold;
     int pruning_mode;
     double pruning_parameter;
+    /* In Viterbi, nodes with normalised values below this are given the
+     * value likelihood_threshold (see tsls_hmm_set_prune_threshold) */
+    double prune_threshold;
     double *recombination_rate;
     double *mismatch_rate;
     /* The per-node state, with the parent links of the quintuply linked
@@ -250,6 +252,7 @@ int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     const double *recombination_rate, const double *mismatch_rate,
     double likelihood_threshold, int flags);
 int tsls_hmm_set_pruning(tsls_hmm_t *self, int mode, double parameter);
+int tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold);
 int tsls_hmm_free(tsls_hmm_t *self);
 int tsls_hmm_find_path(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     const allele_t *haplotype, allele_t *matched_haplotype, size_t *path_length,
