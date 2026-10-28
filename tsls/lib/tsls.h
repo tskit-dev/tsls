@@ -146,7 +146,11 @@ typedef struct {
     /* The likelihood cache of the node (and its inherited flag) is valid
      * if this equals the HMM's cache_stamp */
     uint32_t cache_stamp;
-    uint32_t unused;
+    /* In Viterbi, the nearest proper ancestor with a likelihood: for a node
+     * with a likelihood, as computed at the start of each site, and for a
+     * node without one, cached when cache_stamp is valid (see
+     * tsls_hmm_get_listed_ancestor) */
+    tsk_id_t listed_ancestor;
 } tsls_node_t;
 
 /* A node's likelihood, with the cache used by the walks up the tree. */

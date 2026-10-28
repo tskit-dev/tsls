@@ -1359,6 +1359,111 @@ tsls_hmm_get_inherited_likelihood_and_flag(
     return value;
 }
 
+/* Returns the nearest proper ancestor of u that has a likelihood, or
+ * NULL_NODE if u is a root. The answer is cached on the nodes without
+ * likelihoods on the path, using the likelihood cache's stamp, so that
+ * finding the ancestors of all the nodes in the likelihood list costs the
+ * size of the union of their paths up to the nearest node with a
+ * likelihood. These are much shorter than the paths up to a mutation or
+ * root. The caches must be cleared before (they share the stamp with the
+ * likelihood caches) and after, once the likelihood list changes. */
+static ALWAYS_INLINE tsk_id_t
+tsls_hmm_get_listed_ancestor(tsls_hmm_t *self, tsk_id_t u)
+{
+    const tsls_likelihood_t *restrict L = self->likelihood;
+    tsls_node_t *restrict tree = self->tree;
+    const uint32_t stamp = self->cache_stamp;
+    const tsk_id_t p = tree[u].parent;
+    tsk_id_t v, a;
+
+    if (p == NULL_NODE) {
+        return NULL_NODE;
+    }
+    v = p;
+    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(tree[v].cache_stamp != stamp)) {
+        v = tree[v].parent;
+    }
+    a = L[v].value >= 0 ? v : tree[v].listed_ancestor;
+    v = p;
+    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(tree[v].cache_stamp != stamp)) {
+        tree[v].listed_ancestor = a;
+        tree[v].cache_stamp = stamp;
+        v = tree[v].parent;
+    }
+    return a;
+}
+
+/* Returns the allelic state of the node u with a likelihood, given that
+ * every node in the likelihood list has its listed_ancestor set, and that
+ * the nodes with mutations at the site have their allelic states set and
+ * the roots are marked with ROOT_ALLELE. Because every node with a mutation
+ * at the site has a likelihood (tsls_hmm_insert_mutation_likelihoods), a
+ * node without a mutation has the state of its nearest ancestor with a
+ * likelihood, so the walk goes up the list's own tree rather than the
+ * whole tree. States found are memoised on the list nodes passed, as in
+ * get_memoised_allelic_state. */
+static ALWAYS_INLINE allele_t
+get_listed_allelic_state(tsls_node_t *restrict tree, tsk_id_t u,
+    allele_t ancestral_state, tsk_id_t *restrict touched, int *num_touched)
+{
+    allele_t state;
+    tsk_id_t v = u;
+    int n = *num_touched;
+
+    while (tree[v].allelic_state == TSK_NULL) {
+        v = tree[v].listed_ancestor;
+    }
+    state = tree[v].allelic_state;
+    while (u != v) {
+        tree[u].allelic_state = state;
+        touched[n] = u;
+        n++;
+        u = tree[u].listed_ancestor;
+    }
+    *num_touched = n;
+    return likely(state != ROOT_ALLELE) ? state : ancestral_state;
+}
+
+/* Remove the Viterbi likelihoods that are equal to those of the nearest
+ * ancestor with a likelihood, with the same recombination_required flag, so
+ * that the traceback is unchanged (see tsls_hmm_coalesce_likelihoods). The
+ * listed_ancestor of every node in the list must be up to date. A node
+ * whose ancestor is itself removed here had the same value and flag as that
+ * ancestor, which had the same as its own ancestor, so the nodes are only
+ * removed after all the comparisons. */
+static void
+tsls_hmm_coalesce_listed_likelihoods(tsls_hmm_t *self)
+{
+    tsls_likelihood_t *restrict L = self->likelihood;
+    const tsls_node_t *restrict tree = self->tree;
+    tsk_id_t *restrict L_nodes = self->likelihood_nodes;
+    tsk_id_t *restrict removed = self->likelihood_nodes_tmp;
+    const int old_num_likelihood_nodes = self->num_likelihood_nodes;
+    int j, num_removed, num_likelihood_nodes;
+    tsk_id_t u, a;
+
+    num_removed = 0;
+    num_likelihood_nodes = 0;
+    for (j = 0; j < old_num_likelihood_nodes; j++) {
+        u = L_nodes[j];
+        a = tree[u].listed_ancestor;
+        if (a != NULL_NODE && L[u].value == L[a].value
+            && tree[u].recombination_required == tree[a].recombination_required) {
+            removed[num_removed] = u;
+            num_removed++;
+        } else {
+            L_nodes[num_likelihood_nodes] = u;
+            num_likelihood_nodes++;
+        }
+    }
+    for (j = 0; j < num_removed; j++) {
+        L[removed[j]].value = NULL_LIKELIHOOD;
+        tsls_hmm_record_removed(self, removed[j]);
+    }
+    self->num_likelihood_nodes = num_likelihood_nodes;
+    tsls_hmm_clear_likelihood_caches(self);
+}
+
 /* Remove likelihoods that are equal to the likelihood inherited from the
  * parent. If check_recombination_required is true, also require the
  * recombination_required flag to equal the one inherited from the parent,
@@ -1594,6 +1699,12 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     tsls_hmm_insert_mutation_likelihoods(self, site);
     tsls_hmm_set_allelic_state(self, site);
     self->site_num_updated = (size_t) self->num_likelihood_nodes;
+    /* Find the list's own tree, for the alleles and coalescing */
+    tsls_hmm_clear_likelihood_caches(self);
+    for (j = 0; j < self->num_likelihood_nodes; j++) {
+        u = L_nodes[j];
+        tree[u].listed_ancestor = tsls_hmm_get_listed_ancestor(self, u);
+    }
     max_L = -1;
     max_L_node = NULL_NODE;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
@@ -1611,7 +1722,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
             p_t = p_recomb;
             tree[u].recombination_required = true;
         }
-        allele = get_memoised_allelic_state(
+        allele = get_listed_allelic_state(
             tree, u, ancestral_state, touched, &num_touched);
         p_e = emission_probability(allele, state, mu, num_alleles);
         if (track_changes && state != TSLS_MISSING_DATA && allele != state) {
@@ -1664,7 +1775,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     /* Remove redundant nodes before storing the traceback, keeping those
      * whose recombination_required flag differs from the inherited one.
      * Those are left for the next site, where their flags are recomputed. */
-    tsls_hmm_coalesce_likelihoods(self, true);
+    tsls_hmm_coalesce_listed_likelihoods(self);
     ret = tsls_hmm_store_traceback(self, site, self->removed_nodes,
         self->num_removed_nodes, L_nodes, self->num_likelihood_nodes);
     if (ret != 0) {
