@@ -184,6 +184,12 @@ class Hmm(_tsls.Hmm):
     is True, the mean number of distinct values per site in Viterbi is
     recorded in ``mean_num_distinct_values``.
 
+    The experimental ``log_value_step`` d rounds each normalised Viterbi
+    value to the nearest exp(-k d), for integer k, so that values within a
+    factor of about exp(d) become equal and can be coalesced. Paths are
+    then approximate: each switch or mismatch can change a path's log odds
+    by up to d / 2.
+
     By default, Viterbi processes a site sparsely when it can, recomputing
     only the values that can change there (``num_sparse_sites`` counts these
     sites in the last run). This finds a path with the same likelihood as
@@ -208,6 +214,7 @@ class Hmm(_tsls.Hmm):
         weight_by_n=None,
         extended_checks=False,
         relative_prune_threshold=None,
+        log_value_step=None,
         count_distinct=False,
         sparse=True,
     ):
@@ -229,6 +236,8 @@ class Hmm(_tsls.Hmm):
         }
         if relative_prune_threshold is not None:
             kwargs["relative_prune_threshold"] = relative_prune_threshold
+        if log_value_step is not None:
+            kwargs["log_value_step"] = log_value_step
         if likelihood_threshold is not None:
             kwargs["likelihood_threshold"] = likelihood_threshold
         if prune_threshold is not None:

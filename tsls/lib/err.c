@@ -45,6 +45,9 @@ tsls_strerror(int err)
         case TSLS_ERR_BAD_PRUNING:
             ret = "Bad pruning: prune thresholds must be in [0, 1]";
             break;
+        case TSLS_ERR_BAD_LOG_VALUE_STEP:
+            ret = "Bad log value step: must be finite and >= 0";
+            break;
     }
     return ret;
 }

@@ -811,6 +811,26 @@ out:
     return ret;
 }
 
+/* Experimental: in Viterbi, round each normalised value v to the nearest
+ * exp(-k step) for integer k >= 0, so that values that differ by less than
+ * the step become equal and can be coalesced. With a prune threshold t,
+ * values then take at most about log(1 / t) / step distinct levels. This is
+ * approximate: rounding changes the odds of paths by up to a factor of
+ * exp(step / 2) at each event. 0 turns it off. */
+int
+tsls_hmm_set_log_value_step(tsls_hmm_t *self, double step)
+{
+    int ret = 0;
+
+    if (!(step >= 0 && isfinite(step))) {
+        ret = TSLS_ERR_BAD_LOG_VALUE_STEP;
+        goto out;
+    }
+    self->log_value_step = step;
+out:
+    return ret;
+}
+
 static int
 cmp_double(const void *a, const void *b)
 {
@@ -1445,9 +1465,13 @@ tsls_hmm_get_n(const tsls_hmm_t *self)
 static inline double
 tsls_hmm_normalise_viterbi(const tsls_hmm_t *self, double value, double max_L)
 {
+    const double step = self->log_value_step;
+
     value /= max_L;
     if (value < self->prune_threshold) {
         value = self->likelihood_threshold;
+    } else if (step > 0 && value > self->likelihood_threshold) {
+        value = exp(-step * round(-log(value) / step));
     }
     return TSK_MAX(value, self->likelihood_threshold);
 }

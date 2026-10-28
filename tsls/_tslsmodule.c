@@ -228,11 +228,13 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     int err;
     int extended_checks = 0;
     double relative_prune_threshold = 0;
+    double log_value_step = 0;
     int count_distinct = 0;
     int sparse = 1;
     static char *kwlist[] = { "tree_sequence", "recombination", "mismatch",
         "extended_checks", "likelihood_threshold", "prune_threshold",
-        "relative_prune_threshold", "count_distinct", "sparse", NULL };
+        "relative_prune_threshold", "count_distinct", "sparse", "log_value_step",
+        NULL };
     TreeSequence *tree_sequence = NULL;
     PyObject *recombination = NULL;
     PyObject *mismatch = NULL;
@@ -246,10 +248,10 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
 
     self->hmm = NULL;
     self->tree_sequence = NULL;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|idddii", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|idddiid", kwlist,
             &TreeSequenceType, &tree_sequence, &recombination, &mismatch,
             &extended_checks, &likelihood_threshold, &prune_threshold,
-            &relative_prune_threshold, &count_distinct, &sparse)) {
+            &relative_prune_threshold, &count_distinct, &sparse, &log_value_step)) {
         goto out;
     }
     self->tree_sequence = tree_sequence;
@@ -308,6 +310,11 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
         goto out;
     }
     err = tsls_hmm_set_prune_threshold(self->hmm, prune_threshold);
+    if (err != 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = tsls_hmm_set_log_value_step(self->hmm, log_value_step);
     if (err != 0) {
         handle_library_error(err);
         goto out;
