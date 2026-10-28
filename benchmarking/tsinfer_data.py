@@ -121,12 +121,22 @@ def load_model(data_dir, source):
     with open(data_dir / CONFIG, "rb") as f:
         raw = tomllib.load(f)
     params = raw["match"]["sources"][source]
-    return {
+    model = {
         "rho": params.get("recombination", 1e-2),
         "mu": params.get("mismatch", 1e-20),
         "weight_by_n": True,
         "alleles": None,
     }
+    # A recombination rate (per bp, or the path to a genetic map) gives
+    # per-site probabilities, which run.py computes from the sites.
+    if "recombination_rate" in params:
+        if "recombination" in params:
+            raise ValueError(
+                "Cannot specify both 'recombination' and 'recombination_rate'"
+            )
+        model["rho"] = None
+        model["recombination_rate"] = params["recombination_rate"]
+    return model
 
 
 def group_resources(ts, group, group_size):

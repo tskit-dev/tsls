@@ -204,7 +204,10 @@ experimental `pruning` option, `prune_threshold` keeps sparse sites.
 - **Recombination maps.** Per-site r_j already works. The thresholds use the
   extreme q_j and e_j over the sites, which is conservative when they vary
   a lot. A per-site cutoff (for example `max(t, q_{j+1})`) is the natural
-  extension.
+  extension. On chr20p with the HapMap II map, the per-site r_j span eight
+  orders of magnitude (3e-12 to 6e-4), so `lossless_threshold` (the minimum
+  q_j) is far below the typical q_j, and a map with zero-rate regions would
+  make it 0 (see benchmarking/README.md, "Recombination maps").
 - **Forward-backward thresholds.** Pruning a node removes its mass, so the
   forward value is a lower bound on the likelihood. The mass removed at each
   site bounds the error, which gives a route to thresholds with guaranteed

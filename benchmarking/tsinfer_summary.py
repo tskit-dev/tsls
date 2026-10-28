@@ -3,7 +3,9 @@ Summarise run.py results on workloads made by tsinfer_data.py.
 
 For each workload and engine, report how often the engine found the same
 path as tsinfer, along with its time and memory, and the time tsinfer
-recorded for matching the whole group.
+recorded for matching the whole group. The model parameters are reported
+too, so that runs of the same workload with different parameters (such as
+a recombination map) can be compared.
 """
 
 import json
@@ -40,6 +42,17 @@ def join_truth(results, query_dir):
     return pd.concat([df, stats], axis=1)
 
 
+def recombination_label(d):
+    """
+    Return a label for the recombination parameters of the results: the
+    rate or genetic map file name if run.py was given one, otherwise rho.
+    """
+    rates = d.get("recombination_rate", pd.Series(dtype=object)).dropna()
+    if len(rates) > 0:
+        return " ".join(sorted({pathlib.Path(str(r)).name for r in rates}))
+    return " ".join(f"{rho:.3g}" for rho in sorted(d.rho.unique()))
+
+
 def summarise(results_path, query_dir):
     query_dir = pathlib.Path(query_dir)
     df = join_truth(pd.read_csv(results_path), query_dir)
@@ -52,6 +65,8 @@ def summarise(results_path, query_dir):
             {
                 "workload": query_dir.name,
                 "engine": engine,
+                "recombination": recombination_label(d),
+                "mu": " ".join(f"{mu:.3g}" for mu in sorted(d.mu.unique())),
                 "queries": len(d),
                 "failed": int(np.sum(d.status != "ok")),
                 "mean sites": np.mean(ok.end - ok.start),

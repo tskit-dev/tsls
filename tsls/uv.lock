@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -22,6 +22,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "demes"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "attrs" },
+    { name = "ruamel-yaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f2/e3/9171b92732305162916d299b3286dc0532669f17ddf9915656bc22539e5a/demes-0.2.3.tar.gz", hash = "sha256:9e613b65b475dba277bca751de1f37a89fd5eb4d856ba27733a2099c8a823617", size = 103269, upload-time = "2023-05-04T19:33:41.913Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/e2/7520ba6ae29d7923a1d1710ad210a2eb8264c40c9dbd3a72f3c4a7be157a/demes-0.2.3-py3-none-any.whl", hash = "sha256:e92455d30bd600bed21ed74583e2b952b4dbc074a7434a9a2d8adecf6fb187d5", size = 40883, upload-time = "2023-05-04T19:33:40.247Z" },
 ]
 
 [[package]]
@@ -67,6 +80,46 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
+]
+
+[[package]]
+name = "msprime"
+version = "1.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "demes" },
+    { name = "newick" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "tskit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e9/c7/1efd44e6aa35c9dfb743c8bf4772aa34a560d817bd9e43f5fdedf7afbbd0/msprime-1.4.4.tar.gz", hash = "sha256:54deb6be3d80f2d9fa03b7f039883024cdebdb14851a890a12650d7ad6fec568", size = 2279231, upload-time = "2026-09-01T17:28:43.248Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/aa/50/6474cfb20b14b98a2421b03fc1ddbfa605d34f8e718a4c97253937f87f45/msprime-1.4.4-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:9b075949ef667f89d095c539ab8c1427c84048d6129b3069c5766f1d4af653b1", size = 1292128, upload-time = "2026-09-01T17:28:19.984Z" },
+    { url = "https://files.pythonhosted.org/packages/04/8e/7fe0da0eefb8efe69fd7788dfb8190ca8d70aa7efffad72e64074e83c9e5/msprime-1.4.4-cp311-cp311-macosx_14_0_x86_64.whl", hash = "sha256:27978c0952cca27cc65820b1e7b4464408b391a05bd4679ab5331f1c3aed9cfc", size = 1516732, upload-time = "2026-09-01T17:28:21.831Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/e9/d775df76b75015c53877e1c1e0b94c660e7aedb309a419232951014e6af3/msprime-1.4.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:863b9d706565c7a3ebcd44bbb7ddd3d7a398559b4a78c72bcad1665099c110c4", size = 2446138, upload-time = "2026-09-01T17:28:23.143Z" },
+    { url = "https://files.pythonhosted.org/packages/94/d5/f0c6131d85013f2c0e338e5303c72ef95b83bcf874da557053fb8f1e1c4a/msprime-1.4.4-cp311-cp311-win_amd64.whl", hash = "sha256:94e40fe43421c6ab9e1b4771a7860a66f6264b3ffbeaa3a925eb3767b364a29d", size = 1588015, upload-time = "2026-09-01T17:28:24.675Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/5c/6f97a220d672c238cf0b71396930dffaa4cf4e3ee4b794b4c48c27ec6fb3/msprime-1.4.4-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:0b12afccd116586e0bdd515424ce6bcd104d5cb85cee646c6d2ca2a8eebc6fd0", size = 1292330, upload-time = "2026-09-01T17:28:26.118Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/9a/2d60548f919446f15f810a559c08385cfe0b8a4d0ce2e94f1af90bc9f648/msprime-1.4.4-cp312-cp312-macosx_14_0_x86_64.whl", hash = "sha256:6e434d51e7c4a66de92d8c1cc90f7aaae18c8b0e4813219a80b970d0dece2a82", size = 1517658, upload-time = "2026-09-01T17:28:27.374Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/70/f9c04e7968784b1c97c981f39da64f8cb6c5749bec0715a3d02906cc4efe/msprime-1.4.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:defa4cb04e841be0c940ebd86d39a714e6e588507b7fd15652f59ff49622819d", size = 2451348, upload-time = "2026-09-01T17:28:28.939Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/3e/877ee2a555422439a63d9dc47a0b3e5ca54aecc85d125a7b44141e399597/msprime-1.4.4-cp312-cp312-win_amd64.whl", hash = "sha256:e4099e75cebbf9066673fd6712a75380c6d760d5fa5e7e1b88de2ed5eeea7cb3", size = 1587410, upload-time = "2026-09-01T17:28:30.526Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/7c/b671f1b8df51d484554e54a840464066d49a55f8aa2525311b5ecd6b3370/msprime-1.4.4-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:4aa0f711c580c5fb456187c86d35fa0664f93233489e34c5376b0a60bcb3731a", size = 1292332, upload-time = "2026-09-01T17:28:31.937Z" },
+    { url = "https://files.pythonhosted.org/packages/14/00/cef00569466f8463dc5226373966dfb0a5ed494e0065fac7eb1d4265ab7b/msprime-1.4.4-cp313-cp313-macosx_14_0_x86_64.whl", hash = "sha256:9de6ff01895b8441b33d84be4878bfa2e141b33ed407734f816bd22bea8f2664", size = 1517646, upload-time = "2026-09-01T17:28:33.448Z" },
+    { url = "https://files.pythonhosted.org/packages/06/27/e01a2f9beb28cada4ee6a38f0f5effcfbcf7e60c1c0f98d36bbbc92d0eb5/msprime-1.4.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5b7a03694919f6dec884b8c6d5c0b75b883d50e1513c7481b9e65aaba79c0162", size = 2451275, upload-time = "2026-09-01T17:28:34.802Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/48/571be07b65bd390a3eff6154a02c2a89005c0c759b9fc4bbfa4ec9957f84/msprime-1.4.4-cp313-cp313-win_amd64.whl", hash = "sha256:3624a47e6990182436d81874798280af6012bbc0df805a639c06bb29fe451252", size = 1587433, upload-time = "2026-09-01T17:28:36.136Z" },
+    { url = "https://files.pythonhosted.org/packages/95/53/0cc73d0eb1bbedfed1c47aae82e7c4cacac9f007709cfc69b2918cc3c73b/msprime-1.4.4-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:2c33a07a3500dc4639f45919146e19119ee330c7c3a04d5cfdca4bca081956c3", size = 1292350, upload-time = "2026-09-01T17:28:37.745Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/a1/4db2c85787a27a75469b9e58543a560061e0bd49ff697bfff8549821c5e9/msprime-1.4.4-cp314-cp314-macosx_14_0_x86_64.whl", hash = "sha256:5b5c4f4f0589b94ca7231df9ce55c262aa1fd5828f41898e53aac97a61960444", size = 1517392, upload-time = "2026-09-01T17:28:38.975Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/cf/25e534ac2a8880b8ee5f9bc4c2de774c84924b2f97a91c1389760e16c39e/msprime-1.4.4-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7b3a5ba03a1611a00683423791d28fdac55070a3bad2df4e1883512f1c537763", size = 2451222, upload-time = "2026-09-01T17:28:40.439Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/50/445a5be595fca098efd4b22ed69c0ae5583a9be09d40f07111b3c317f04f/msprime-1.4.4-cp314-cp314-win_amd64.whl", hash = "sha256:c3decb4069fc91db286e1736ebabdf669e5fa483107ab810381f097062c0d569", size = 1641591, upload-time = "2026-09-01T17:28:41.817Z" },
+]
+
+[[package]]
+name = "newick"
+version = "1.11.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/71/6adc60734e7366b5c45332a21193020acc89a4f4391f037e1fc7d368917f/newick-1.11.0.tar.gz", hash = "sha256:b8bf81f88dbc0e1cb85928e6f4c7e0e29062c3739e27216aae76c3065a297186", size = 25426, upload-time = "2026-01-14T11:19:53.065Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/3f/66348a0ff595970ad226d7d5b1583d94486ea64e9e12c434f5d1dd3b3606/newick-1.11.0-py2.py3-none-any.whl", hash = "sha256:c431976e33ea9166d6bf87394408086ce616930a5a434a30883220dee547d6eb", size = 15782, upload-time = "2026-01-14T11:19:51.454Z" },
 ]
 
 [[package]]
@@ -433,6 +486,15 @@ wheels = [
 ]
 
 [[package]]
+name = "ruamel-yaml"
+version = "0.19.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/3b/ebda527b56beb90cb7652cb1c7e4f91f48649fbcd8d2eb2fb6e77cd3329b/ruamel_yaml-0.19.1.tar.gz", hash = "sha256:53eb66cd27849eff968ebf8f0bf61f46cdac2da1d1f3576dd4ccee9b25c31993", size = 142709, upload-time = "2026-01-02T16:50:31.84Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b8/0c/51f6841f1d84f404f92463fc2b1ba0da357ca1e3db6b7fbda26956c3b82a/ruamel_yaml-0.19.1-py3-none-any.whl", hash = "sha256:27592957fedf6e0b62f281e96effd28043345e0e66001f97683aa9a40c667c93", size = 118102, upload-time = "2026-01-02T16:50:29.201Z" },
+]
+
+[[package]]
 name = "tskit"
 version = "1.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -481,6 +543,7 @@ dependencies = [
 
 [package.dev-dependencies]
 test = [
+    { name = "msprime" },
     { name = "pytest" },
     { name = "pytest-xdist" },
 ]
@@ -493,6 +556,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 test = [
+    { name = "msprime" },
     { name = "pytest" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
 ]

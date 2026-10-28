@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import tskit
+import tsls
 from click.testing import CliRunner
 
 import engines
@@ -70,6 +71,18 @@ def ts():
 
 def node_haplotypes(ts, nodes):
     return ts.genotype_matrix(samples=nodes).T.astype(np.int8)
+
+
+def write_genetic_map(path, rows):
+    """Write a HapMap file from (position, map cM) rows."""
+    lines = ["Chromosome Position(bp) Rate(cM/Mb) Map(cM)"]
+    lines += [f"chr1 {pos} 0 {cm}" for pos, cm in rows]
+    path.write_text("\n".join(lines) + "\n")
+
+
+# A map with a recombination hotspot in the middle of the 1000 bp sequence
+# and no recombination at the end.
+MAP_ROWS = [(0, 0), (400, 0.1), (500, 5), (800, 5.5), (900, 6), (1000, 6)]
 
 
 class TestCutBefore:
@@ -179,6 +192,28 @@ class TestTsinferModel:
             np.testing.assert_array_equal(left[1:], right[:-1])
             assert np.all(matched[start:end] == h[start:end])
 
+    def test_engines_agree_with_genetic_map(self, ts, name, tmp_path):
+        path = tmp_path / "map.txt"
+        write_genetic_map(path, MAP_ROWS)
+        rho = tsls.model.recombination_probabilities(path, ts.sites_position)
+        engine = engines.ENGINES[name](
+            ts, mu=1e-3, rho=rho, weight_by_n=True, alleles=None
+        )
+        other = engines.ENGINES["tsinfer"](
+            ts, mu=1e-3, rho=rho, weight_by_n=True, alleles=None
+        )
+        np.testing.assert_array_equal(engine.recombination, rho)
+        rng = np.random.default_rng(2)
+        for _ in range(5):
+            a, b = rng.choice(np.arange(ts.num_nodes - 10, ts.num_nodes), 2)
+            G = node_haplotypes(ts, [a, b])
+            breakpoint = rng.integers(1, ts.num_sites)
+            h = np.concatenate([G[0, :breakpoint], G[1, breakpoint:]])
+            _, _, parent, matched, _ = engine.match(h)
+            _, _, other_parent, other_matched, _ = other.match(h)
+            assert np.sum(matched != h) == np.sum(other_matched != h)
+            assert len(parent) == len(other_parent)
+
     def test_engines_agree_on_mismatches(self, ts, name):
         engine = self.make_engine(ts, name)
         other = self.make_engine(ts, "tsinfer")
@@ -238,6 +273,80 @@ class TestRunWithModel:
             assert len(breakpoints) == row.num_segments - 1
             assert np.all(np.isin(breakpoints, positions[start + 1 : end]))
 
+    def run(self, workload, out, *args):
+        return CliRunner().invoke(
+            run.main,
+            [str(workload / "reference.trees"), str(workload), "-o", str(out), *args],
+        )
+
+    def test_constant_recombination_rate(self, workload, tmp_path):
+        out = tmp_path / "results.csv"
+        result = self.run(
+            workload, out, "--recombination-rate", "1e-4", "--mismatch", "1e-3"
+        )
+        assert result.exit_code == 0, result.output
+        df = pd.read_csv(out)
+        assert np.all(df.status == "ok")
+        assert np.all(df.recombination_rate == 1e-4)
+        assert np.all(df.mu == 1e-3)
+        positions = tskit.load(workload / "reference.trees").sites_position
+        rho = tsls.model.recombination_probabilities(1e-4, positions)
+        np.testing.assert_allclose(df.rho, np.mean(rho[1:]))
+
+    def test_genetic_map(self, workload, tmp_path):
+        path = tmp_path / "map.txt"
+        write_genetic_map(path, MAP_ROWS)
+        out = tmp_path / "results.csv"
+        result = self.run(workload, out, "--recombination-rate", str(path))
+        assert result.exit_code == 0, result.output
+        df = pd.read_csv(out)
+        assert np.all(df.status == "ok")
+        assert np.all(df.recombination_rate == str(path))
+        assert np.all(df.mu == 1e-20)
+        by_engine = df.set_index(["engine", "query_id"])
+        assert list(by_engine.loc["tsinfer"].num_segments) == list(
+            by_engine.loc["tsls"].num_segments
+        )
+
+    def test_recombination_rate_in_model(self, workload, tmp_path):
+        path = tmp_path / "map.txt"
+        write_genetic_map(path, MAP_ROWS)
+        with open(workload / "model.json") as f:
+            model = json.load(f)
+        model["rho"] = None
+        model["recombination_rate"] = str(path)
+        with open(workload / "model.json", "w") as f:
+            json.dump(model, f)
+        out = tmp_path / "results.csv"
+        result = self.run(workload, out)
+        assert result.exit_code == 0, result.output
+        df = pd.read_csv(out)
+        assert np.all(df.recombination_rate == str(path))
+        expected = tmp_path / "expected.csv"
+        model["recombination_rate"] = None
+        model["rho"] = 0.01
+        with open(workload / "model.json", "w") as f:
+            json.dump(model, f)
+        result = self.run(workload, expected, "--recombination-rate", str(path))
+        assert result.exit_code == 0, result.output
+        other = pd.read_csv(expected)
+        assert list(df.parents) == list(other.parents)
+        np.testing.assert_array_equal(df.rho, other.rho)
+
+    def test_bad_recombination_rate(self, workload, tmp_path):
+        out = tmp_path / "results.csv"
+        result = self.run(workload, out, "--recombination-rate", "nofile")
+        assert result.exit_code != 0
+        assert "not a number or a file" in result.output
+
+    def test_old_results_rejected(self, workload, tmp_path):
+        out = tmp_path / "results.csv"
+        columns = [c for c in run.RESULT_COLUMNS if c != "recombination_rate"]
+        pd.DataFrame({c: [0] for c in columns}).to_csv(out, index=False)
+        result = self.run(workload, out)
+        assert result.exit_code != 0
+        assert "older run.py" in result.output
+
     def test_tskit_rejected(self, workload, tmp_path):
         result = CliRunner().invoke(
             run.main,
@@ -266,6 +375,22 @@ class TestRunWithModel:
             ],
         )
         assert result.exit_code != 0
+
+    def test_load_model_recombination_rate(self, tmp_path):
+        (tmp_path / tsinfer_data.CONFIG).write_text(
+            "[match.sources.samples]\nrecombination_rate = 'map.txt'\nmismatch = 1e-4\n"
+        )
+        model = tsinfer_data.load_model(tmp_path, "samples")
+        assert model["rho"] is None
+        assert model["recombination_rate"] == "map.txt"
+        assert model["mu"] == 1e-4
+
+    def test_load_model_both_recombination(self, tmp_path):
+        (tmp_path / tsinfer_data.CONFIG).write_text(
+            "[match.sources.samples]\nrecombination = 0.01\nrecombination_rate = 1e-8\n"
+        )
+        with pytest.raises(ValueError, match="both"):
+            tsinfer_data.load_model(tmp_path, "samples")
 
     def test_load_model(self, workload, tmp_path):
         assert queries.load_model(workload) == TSINFER_MODEL

@@ -14,6 +14,7 @@ import click
 import numpy as np
 import pandas as pd
 import tskit
+import tsls
 import tszip
 from tqdm import tqdm
 
@@ -28,6 +29,7 @@ RESULT_COLUMNS = [
     "mismatch_threshold",
     "mu",
     "rho",
+    "recombination_rate",
     "status",
     "setup_time",
     "wall_time",
@@ -53,8 +55,38 @@ def completed_pairs(out_path):
     """
     if not out_path.exists() or out_path.stat().st_size == 0:
         return set()
-    df = pd.read_csv(out_path, usecols=["query_id", "engine"])
+    df = pd.read_csv(out_path)
+    if list(df.columns) != RESULT_COLUMNS:
+        raise click.ClickException(
+            f"{out_path} has different columns; it was made by an older run.py"
+        )
     return set(zip(df.query_id, df.engine))
+
+
+def parse_recombination_rate(value):
+    """
+    Return a recombination rate given as a number (per unit of sequence
+    length) or the path to a HapMap genetic map, as in tsinfer's config.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        path = pathlib.Path(value)
+        if not path.exists():
+            raise click.BadParameter(f"{value} is not a number or a file") from None
+        return path
+
+
+def rho_summary(rho):
+    """
+    Return the recombination probability to record for a run: rho itself if
+    it is constant, or its mean over all but the first site if it is per-site.
+    """
+    if np.ndim(rho) == 0:
+        return rho
+    return float(np.mean(rho[1:])) if len(rho) > 1 else 0.0
 
 
 def summarise_match(ts, node_ids, h, result, mu, rho, *, log_likelihood=True):
@@ -108,6 +140,20 @@ def summarise_match(ts, node_ids, h, result, mu, rho, *, log_likelihood=True):
     default=None,
     help="Likelihood threshold for tsinfer, in numbers of mismatches (as sc2ts)",
 )
+@click.option(
+    "--recombination-rate",
+    default=None,
+    help=(
+        "Recombination rate per bp, or the path to a HapMap genetic map, "
+        "replacing the model.json rho with per-site probabilities (as tsinfer)"
+    ),
+)
+@click.option(
+    "--mismatch",
+    type=float,
+    default=None,
+    help="Mismatch probability, replacing the model.json mu",
+)
 @click.option("--kind", type=click.Choice(["copy", "recombinant"]), default=None)
 @click.option("--limit", type=int, default=None, help="Run at most this many queries")
 def main(
@@ -117,6 +163,8 @@ def main(
     output,
     num_mismatches,
     mismatch_threshold,
+    recombination_rate,
+    mismatch,
     kind,
     limit,
 ):
@@ -126,11 +174,19 @@ def main(
 
     If QUERY_DIR contains a model.json (as made by tsinfer_data.py), its
     parameters are used instead of --num-mismatches, and the tskit engine,
-    which cannot use them, is not available.
+    which cannot use them, is not available. --recombination-rate and
+    --mismatch override its parameters as tsinfer's recombination_rate and
+    mismatch would: the rate or genetic map gives per-site recombination
+    probabilities (tsls.model.recombination_probabilities).
     """
     model = queries.load_model(query_dir)
+    recombination_rate = parse_recombination_rate(recombination_rate)
     engine_options = {}
     if model is None:
+        if recombination_rate is not None or mismatch is not None:
+            raise click.UsageError(
+                "--recombination-rate and --mismatch need a model.json"
+            )
         if len(engine_names) == 0:
             engine_names = list(engines.ENGINES)
         if num_mismatches is None:
@@ -143,14 +199,27 @@ def main(
             raise click.UsageError("The tskit engine does not support model.json")
         if num_mismatches is not None:
             raise click.UsageError("--num-mismatches cannot be used with model.json")
-        mu = model["mu"]
+        mu = model["mu"] if mismatch is None else mismatch
         rho = model["rho"]
+        if recombination_rate is None:
+            recombination_rate = parse_recombination_rate(
+                model.get("recombination_rate")
+            )
         engine_options = {
             "weight_by_n": model["weight_by_n"],
             "alleles": model["alleles"],
         }
     ts = load_ts(ts_path)
     node_ids = subargs.load_node_ids(ts_path, ts)
+    if recombination_rate is not None:
+        rho = tsls.model.recombination_probabilities(
+            recombination_rate, ts.sites_position
+        )
+        click.echo(
+            f"Recombination probabilities from {recombination_rate}: "
+            f"min={np.min(rho[1:]):.3g} mean={np.mean(rho[1:]):.3g} "
+            f"max={np.max(rho[1:]):.3g}"
+        )
     H, positions, df = queries.load_queries(query_dir)
     if not np.array_equal(positions, ts.sites_position):
         raise ValueError("Query sites do not match the tree sequence")
@@ -189,7 +258,10 @@ def main(
                     "num_mismatches_param": num_mismatches,
                     "mismatch_threshold": options.get("mismatch_threshold"),
                     "mu": engine.mu,
-                    "rho": engine.rho,
+                    "rho": rho_summary(engine.rho),
+                    "recombination_rate": (
+                        "" if recombination_rate is None else recombination_rate
+                    ),
                     "setup_time": setup_time,
                 }
                 wall_before = time.perf_counter()
