@@ -137,29 +137,29 @@ typedef struct {
      * there (or is a root, during the sweeps) */
     allele_t allelic_state;
     int8_t recombination_required;
-    /* The recombination_required flag inherited by the node, valid where
-     * the likelihood cache is. Only filled when coalescing Viterbi. */
-    int8_t recombination_required_cache;
+    int8_t unused;
     /* The node's flag in the traceback as of the last site stored, or -1
      * if it is not in the traceback's set */
     int8_t traceback_flag;
-    /* The likelihood cache of the node (and its inherited flag) is valid
-     * if this equals the HMM's cache_stamp */
+    /* The walks up the tree to the nearest node with a likelihood are
+     * cached (see tsls_hmm_find_listed). A node whose cache_stamp equals the
+     * HMM's is either a node with a likelihood, whose listed_ancestor is
+     * itself, or a node without one whose listed_ancestor leads, by
+     * following listed_ancestor, to its nearest ancestor with a likelihood.
+     * Nodes with likelihoods always have the current stamp. */
     uint32_t cache_stamp;
-    /* In Viterbi, the nearest proper ancestor with a likelihood: for a node
-     * with a likelihood, as computed at the start of each site, and for a
-     * node without one, cached when cache_stamp is valid (see
-     * tsls_hmm_get_listed_ancestor) */
     tsk_id_t listed_ancestor;
 } tsls_node_t;
 
-/* A node's likelihood, with the cache used by the walks up the tree. */
+/* A node's likelihood. */
 typedef struct {
     /* The node's likelihood, or NULL_LIKELIHOOD or NOT_IN_TREE */
     double value;
-    /* The likelihood the node inherits, valid if the node's cache_stamp
-     * equals the HMM's (see tsls_hmm_get_inherited_likelihood) */
-    double cache;
+    /* For a node with a likelihood, in Viterbi, its nearest proper ancestor
+     * with a likelihood (NULL_NODE for a root), set at the start of each
+     * site (see tsls_hmm_set_listed_ancestors) */
+    tsk_id_t ancestor;
+    int32_t unused;
 } tsls_likelihood_t;
 
 /* The Li and Stephens HMM on a tree sequence. The index is borrowed, and
@@ -186,8 +186,8 @@ typedef struct {
     /* The per-node state, including the tree's parent links */
     tsls_node_t *tree;
     tsls_likelihood_t *likelihood;
-    /* Likelihood caches are valid on nodes whose cache_stamp equals this;
-     * incrementing it clears them all */
+    /* The walk caches are valid on nodes whose cache_stamp equals this;
+     * incrementing it clears them all (see tsls_hmm_clear_walk_caches) */
     uint32_t cache_stamp;
     /* The number of children of each node in the current tree */
     int32_t *num_children;

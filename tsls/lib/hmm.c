@@ -571,7 +571,7 @@ tsls_hmm_check_state(const tsls_hmm_t *self)
 {
     int num_likelihoods = 0;
     int j;
-    tsk_id_t u;
+    tsk_id_t u, v, a;
 
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = self->likelihood_nodes[j];
@@ -592,7 +592,22 @@ tsls_hmm_check_state(const tsls_hmm_t *self)
         }
         assert(self->tree[u].allelic_state
                == (self->tree[u].parent == NULL_NODE ? ROOT_ALLELE : TSK_NULL));
-        assert(self->tree[u].cache_stamp != self->cache_stamp);
+        if (self->likelihood[u].value >= 0) {
+            /* Nodes with likelihoods are marked for the walk caches */
+            assert(self->tree[u].cache_stamp == self->cache_stamp);
+            assert(self->tree[u].listed_ancestor == u);
+        } else if (self->tree[u].cache_stamp == self->cache_stamp) {
+            /* A cached walk leads to the nearest ancestor with a likelihood */
+            v = self->tree[u].parent;
+            while (self->likelihood[v].value < 0) {
+                v = self->tree[v].parent;
+            }
+            a = self->tree[u].listed_ancestor;
+            while (self->tree[a].listed_ancestor != a) {
+                a = self->tree[a].listed_ancestor;
+            }
+            assert(a == v);
+        }
     }
     assert(num_likelihoods == self->num_likelihood_nodes);
     (void) num_likelihoods;
@@ -851,9 +866,62 @@ tsls_hmm_count_distinct(tsls_hmm_t *self)
     self->total_distinct_values += num_distinct;
 }
 
+/* Clear all the walk caches (see tsls_node_t), marking the nodes with
+ * likelihoods again. The caches stay valid as long as no node on a cached
+ * path gets a likelihood or a new parent, so this is only needed when one
+ * does (see tsls_hmm_mark_listed and tsls_hmm_remove_edge). */
+static void
+tsls_hmm_clear_walk_caches(tsls_hmm_t *self)
+{
+    tsls_node_t *restrict tree = self->tree;
+    const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
+    tsk_id_t u;
+    size_t k;
+    int j;
+
+    self->cache_stamp++;
+    if (unlikely(self->cache_stamp == 0)) {
+        for (k = 0; k < self->num_nodes; k++) {
+            tree[k].cache_stamp = 0;
+        }
+        self->cache_stamp = 1;
+    }
+    for (j = 0; j < self->num_likelihood_nodes; j++) {
+        u = L_nodes[j];
+        tree[u].cache_stamp = self->cache_stamp;
+        tree[u].listed_ancestor = u;
+    }
+}
+
+/* Mark u, which is being given a likelihood, as a node with a likelihood
+ * for the walk caches. If u has a cached walk, walks from below may have
+ * passed through it to an ancestor that is no longer the nearest, so the
+ * caches are cleared first. The caller must not have walked from u itself
+ * since it last changed. */
+static inline void
+tsls_hmm_mark_listed(tsls_hmm_t *self, tsk_id_t u)
+{
+    tsls_node_t *restrict tree = self->tree;
+
+    if (unlikely(tree[u].cache_stamp == self->cache_stamp)) {
+        tsls_hmm_clear_walk_caches(self);
+    }
+    tree[u].cache_stamp = self->cache_stamp;
+    tree[u].listed_ancestor = u;
+}
+
+/* Mark u, which has just lost its likelihood, as a node without one whose
+ * nearest ancestor with a likelihood is ancestor (via listed_ancestor). */
+static inline void
+tsls_hmm_mark_unlisted(tsls_hmm_t *self, tsk_id_t u, tsk_id_t ancestor)
+{
+    self->tree[u].listed_ancestor = ancestor;
+}
+
 static inline void
 tsls_hmm_add_likelihood(tsls_hmm_t *self, tsk_id_t u, double value)
 {
+    tsls_hmm_mark_listed(self, u);
     self->likelihood[u].value = value;
     self->likelihood_nodes[self->num_likelihood_nodes] = u;
     self->num_likelihood_nodes++;
@@ -888,6 +956,7 @@ tsls_hmm_add_likelihood_sorted(tsls_hmm_t *self, tsk_id_t u, double value)
     tsk_id_t *L_nodes = self->likelihood_nodes;
     const int j = tsls_hmm_lower_bound(self, self->preorder[u]);
 
+    tsls_hmm_mark_listed(self, u);
     memmove(L_nodes + j + 1, L_nodes + j,
         (size_t) (self->num_likelihood_nodes - j) * sizeof(*L_nodes));
     L_nodes[j] = u;
@@ -895,9 +964,10 @@ tsls_hmm_add_likelihood_sorted(tsls_hmm_t *self, tsk_id_t u, double value)
     self->likelihood[u].value = value;
 }
 
-/* Remove u from the likelihood list, which is sorted by preorder. */
+/* Remove u from the likelihood list, which is sorted by preorder, given
+ * its nearest ancestor with a likelihood. */
 static void
-tsls_hmm_remove_likelihood_sorted(tsls_hmm_t *self, tsk_id_t u)
+tsls_hmm_remove_likelihood_sorted(tsls_hmm_t *self, tsk_id_t u, tsk_id_t ancestor)
 {
     tsk_id_t *L_nodes = self->likelihood_nodes;
     const int j = tsls_hmm_lower_bound(self, self->preorder[u]);
@@ -907,6 +977,7 @@ tsls_hmm_remove_likelihood_sorted(tsls_hmm_t *self, tsk_id_t u)
         (size_t) (self->num_likelihood_nodes - j - 1) * sizeof(*L_nodes));
     self->num_likelihood_nodes--;
     self->likelihood[u].value = NULL_LIKELIHOOD;
+    tsls_hmm_mark_unlisted(self, u, ancestor);
 }
 
 /* Record that u has been removed from the likelihood list at the current
@@ -953,50 +1024,45 @@ tsls_hmm_update_num_below(tsls_hmm_t *self, tsk_id_t u, int64_t delta)
     }
 }
 
-/* Returns the likelihood inherited by node u, filling in the likelihood
- * cache along the path so that later queries are fast. The walks up the
- * tree here and in tsls_hmm_get_inherited_likelihood_and_flag are inner
- * loops, so they have no asserts (every root has a likelihood, which
- * tsls_hmm_check_state checks). */
-static inline double
-tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
+/* Returns the nearest ancestor of u (or u itself) with a likelihood. The
+ * answer is cached on the nodes without likelihoods on the path (see
+ * tsls_node_t), so that later walks through them stop there; the caches
+ * stay valid across sites until a node on a cached path gets a likelihood
+ * or a new parent. A walk stops at a node with the current stamp, which is
+ * either a node with a likelihood (its own listed_ancestor) or a cached
+ * node, whose listed_ancestor may be a node that has since lost its
+ * likelihood, and so is followed until a node with a likelihood. This is
+ * the innermost loop of the HMM, so it has no asserts (every root has a
+ * likelihood, which tsls_hmm_check_state checks). */
+static ALWAYS_INLINE tsk_id_t
+tsls_hmm_find_listed(tsls_hmm_t *self, tsk_id_t u)
 {
-    tsls_likelihood_t *restrict L = self->likelihood;
     tsls_node_t *restrict tree = self->tree;
     const uint32_t stamp = self->cache_stamp;
-    double value;
-    tsk_id_t v;
+    tsk_id_t v, a;
 
     v = u;
-    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(tree[v].cache_stamp != stamp)) {
+    while (tree[v].cache_stamp != stamp) {
         v = tree[v].parent;
     }
-    /* A node with a likelihood may have a stale cache from before it was
-     * given one, so its likelihood takes precedence */
-    value = L[v].value >= 0 ? L[v].value : L[v].cache;
+    a = tree[v].listed_ancestor;
+    while (unlikely(tree[a].listed_ancestor != a)) {
+        a = tree[a].listed_ancestor;
+    }
     v = u;
-    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(tree[v].cache_stamp != stamp)) {
-        L[v].cache = value;
+    while (tree[v].cache_stamp != stamp) {
+        tree[v].listed_ancestor = a;
         tree[v].cache_stamp = stamp;
         v = tree[v].parent;
     }
-    return value;
+    return a;
 }
 
-/* Clear all the likelihood caches, which are only valid while the tree and
- * the set of nodes with likelihoods are unchanged. */
-static inline void
-tsls_hmm_clear_likelihood_caches(tsls_hmm_t *self)
+/* Returns the likelihood inherited by node u. */
+static inline double
+tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
 {
-    size_t j;
-
-    self->cache_stamp++;
-    if (unlikely(self->cache_stamp == 0)) {
-        for (j = 0; j < self->num_nodes; j++) {
-            self->tree[j].cache_stamp = 0;
-        }
-        self->cache_stamp = 1;
-    }
+    return self->likelihood[tsls_hmm_find_listed(self, u)].value;
 }
 
 /* Remove the edge from p to c from the tree, and if update_likelihoods is
@@ -1077,7 +1143,6 @@ tsls_hmm_update_tree(tsls_hmm_t *self, const tsk_tree_position_t *tp)
         tsls_hmm_remove_edge(
             self, out[j].parent, out[j].child, true, isolated, &num_isolated);
     }
-    tsls_hmm_clear_likelihood_caches(self);
     for (j = tp->in.start; j != tp->in.stop; j += direction) {
         tsls_hmm_insert_edge(self, in[j].parent, in[j].child, true);
     }
@@ -1089,7 +1154,9 @@ tsls_hmm_update_tree(tsls_hmm_t *self, const tsk_tree_position_t *tp)
     for (k = 0; k < num_isolated; k++) {
         u = isolated[k];
         if (!tsls_hmm_in_tree(self, u)) {
+            /* An isolated node has no descendants, so no walk ends here */
             L[u].value = NOT_IN_TREE;
+            self->tree[u].cache_stamp = 0;
             tsls_hmm_record_removed(self, u);
             num_left++;
         }
@@ -1119,7 +1186,6 @@ tsls_hmm_init_sweep(
         self->tree[k].parent = NULL_NODE;
         self->tree[k].allelic_state = ROOT_ALLELE;
         self->tree[k].recombination_required = -1;
-        self->tree[k].recombination_required_cache = -1;
         self->tree[k].traceback_flag = -1;
         self->num_below[k] = 1;
     }
@@ -1293,10 +1359,9 @@ tsls_hmm_insert_mutation_likelihoods(tsls_hmm_t *self, const tsk_id_t site)
     for (j = index->site_mutations_offset[site]; j < stop; j++) {
         node = index->mutation_node[j];
         if (L[node].value == NULL_LIKELIHOOD) {
-            u = node;
-            while (L[u].value == NULL_LIKELIHOOD) {
-                u = tree[u].parent;
-            }
+            /* Walk from the parent, so that the node's own cache (if any)
+             * is seen when it's marked (see tsls_hmm_mark_listed) */
+            u = tsls_hmm_find_listed(self, tree[node].parent);
             if (self->tree_numbered) {
                 tsls_hmm_add_likelihood_sorted(self, node, L[u].value);
             } else {
@@ -1307,89 +1372,36 @@ tsls_hmm_insert_mutation_likelihoods(tsls_hmm_t *self, const tsk_id_t site)
 }
 
 /* As tsls_hmm_get_inherited_likelihood, but also return the
- * recombination_required flag that u inherits, caching it along the path
- * with the likelihood. */
+ * recombination_required flag that u inherits. */
 static ALWAYS_INLINE double
 tsls_hmm_get_inherited_likelihood_and_flag(
     tsls_hmm_t *self, tsk_id_t u, int8_t *flag)
 {
-    tsls_likelihood_t *restrict L = self->likelihood;
-    tsls_node_t *restrict tree = self->tree;
-    const uint32_t stamp = self->cache_stamp;
-    double value;
-    int8_t r;
-    tsk_id_t v;
+    const tsk_id_t a = tsls_hmm_find_listed(self, u);
 
-    v = u;
-    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(tree[v].cache_stamp != stamp)) {
-        v = tree[v].parent;
-    }
-    if (L[v].value >= 0) {
-        value = L[v].value;
-        r = tree[v].recombination_required;
-    } else {
-        value = L[v].cache;
-        r = tree[v].recombination_required_cache;
-    }
-    v = u;
-    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(tree[v].cache_stamp != stamp)) {
-        L[v].cache = value;
-        tree[v].recombination_required_cache = r;
-        tree[v].cache_stamp = stamp;
-        v = tree[v].parent;
-    }
-    *flag = r;
-    return value;
+    *flag = self->tree[a].recombination_required;
+    return self->likelihood[a].value;
 }
 
-/* Set the listed_ancestor of every node in the likelihood list to its
- * nearest proper ancestor with a likelihood (NULL_NODE for a root). Each
- * listed node is first marked, with the stamp of the likelihood caches and
- * itself as its listed_ancestor, so that the walks up the tree only read
- * the node records. The answers are cached on the nodes without
- * likelihoods on the paths, so the cost is the size of the union of the
- * paths up to the nearest nodes with likelihoods, which are much shorter
- * than the paths up to a mutation or root. Clears the likelihood caches,
- * which share the stamp, before; they must be cleared again once the
- * likelihood list changes. */
+/* Set the ancestor of every node in the likelihood list to its nearest
+ * proper ancestor with a likelihood (NULL_NODE for a root). The walks are
+ * cached (tsls_hmm_find_listed), so the cost is the size of the union of
+ * the paths not already cached, up to the nearest nodes with likelihoods,
+ * which are much shorter than the paths up to a mutation or root. */
 static void
 tsls_hmm_set_listed_ancestors(tsls_hmm_t *self)
 {
-    tsls_node_t *restrict tree = self->tree;
+    tsls_likelihood_t *restrict L = self->likelihood;
+    const tsls_node_t *restrict tree = self->tree;
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
-    tsk_id_t *restrict ancestor = self->likelihood_nodes_tmp;
     const int num_likelihood_nodes = self->num_likelihood_nodes;
-    uint32_t stamp;
-    tsk_id_t u, v, a;
+    tsk_id_t u, p;
     int j;
 
-    tsls_hmm_clear_likelihood_caches(self);
-    stamp = self->cache_stamp;
     for (j = 0; j < num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        tree[u].cache_stamp = stamp;
-        tree[u].listed_ancestor = u;
-    }
-    for (j = 0; j < num_likelihood_nodes; j++) {
-        u = L_nodes[j];
-        a = NULL_NODE;
-        if (tree[u].parent != NULL_NODE) {
-            v = tree[u].parent;
-            while (tree[v].cache_stamp != stamp) {
-                v = tree[v].parent;
-            }
-            a = tree[v].listed_ancestor;
-            v = tree[u].parent;
-            while (tree[v].cache_stamp != stamp) {
-                tree[v].listed_ancestor = a;
-                tree[v].cache_stamp = stamp;
-                v = tree[v].parent;
-            }
-        }
-        ancestor[j] = a;
-    }
-    for (j = 0; j < num_likelihood_nodes; j++) {
-        tree[L_nodes[j]].listed_ancestor = ancestor[j];
+        p = tree[u].parent;
+        L[u].ancestor = p == NULL_NODE ? NULL_NODE : tsls_hmm_find_listed(self, p);
     }
 }
 
@@ -1403,22 +1415,23 @@ tsls_hmm_set_listed_ancestors(tsls_hmm_t *self)
  * whole tree. States found are memoised on the list nodes passed, as in
  * get_memoised_allelic_state. */
 static ALWAYS_INLINE allele_t
-get_listed_allelic_state(tsls_node_t *restrict tree, tsk_id_t u,
-    allele_t ancestral_state, tsk_id_t *restrict touched, int *num_touched)
+get_listed_allelic_state(tsls_node_t *restrict tree,
+    const tsls_likelihood_t *restrict L, tsk_id_t u, allele_t ancestral_state,
+    tsk_id_t *restrict touched, int *num_touched)
 {
     allele_t state;
     tsk_id_t v = u;
     int n = *num_touched;
 
     while (tree[v].allelic_state == TSK_NULL) {
-        v = tree[v].listed_ancestor;
+        v = L[v].ancestor;
     }
     state = tree[v].allelic_state;
     while (u != v) {
         tree[u].allelic_state = state;
         touched[n] = u;
         n++;
-        u = tree[u].listed_ancestor;
+        u = L[u].ancestor;
     }
     *num_touched = n;
     return likely(state != ROOT_ALLELE) ? state : ancestral_state;
@@ -1427,7 +1440,7 @@ get_listed_allelic_state(tsls_node_t *restrict tree, tsk_id_t u,
 /* Remove the Viterbi likelihoods that are equal to those of the nearest
  * ancestor with a likelihood, with the same recombination_required flag, so
  * that the traceback is unchanged (see tsls_hmm_coalesce_likelihoods). The
- * listed_ancestor of every node in the list must be up to date. A node
+ * ancestor of every node in the list must be up to date. A node
  * whose ancestor is itself removed here had the same value and flag as that
  * ancestor, which had the same as its own ancestor, so the nodes are only
  * removed after all the comparisons. */
@@ -1446,7 +1459,7 @@ tsls_hmm_coalesce_listed_likelihoods(tsls_hmm_t *self)
     num_likelihood_nodes = 0;
     for (j = 0; j < old_num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        a = tree[u].listed_ancestor;
+        a = L[u].ancestor;
         if (a != NULL_NODE && L[u].value == L[a].value
             && tree[u].recombination_required == tree[a].recombination_required) {
             removed[num_removed] = u;
@@ -1457,11 +1470,12 @@ tsls_hmm_coalesce_listed_likelihoods(tsls_hmm_t *self)
         }
     }
     for (j = 0; j < num_removed; j++) {
-        L[removed[j]].value = NULL_LIKELIHOOD;
-        tsls_hmm_record_removed(self, removed[j]);
+        u = removed[j];
+        L[u].value = NULL_LIKELIHOOD;
+        tsls_hmm_mark_unlisted(self, u, L[u].ancestor);
+        tsls_hmm_record_removed(self, u);
     }
     self->num_likelihood_nodes = num_likelihood_nodes;
-    tsls_hmm_clear_likelihood_caches(self);
 }
 
 /* Remove likelihoods that are equal to the likelihood inherited from the
@@ -1475,9 +1489,7 @@ tsls_hmm_coalesce_likelihoods(
 {
     tsls_likelihood_t *restrict L = self->likelihood;
     tsls_node_t *restrict tree = self->tree;
-    double L_p;
-    int8_t R_p;
-    tsk_id_t u, p;
+    tsk_id_t u, p, a;
     const int old_num_likelihood_nodes = self->num_likelihood_nodes;
     tsk_id_t *restrict L_nodes = self->likelihood_nodes;
     int j, num_likelihood_nodes;
@@ -1487,19 +1499,17 @@ tsls_hmm_coalesce_likelihoods(
         u = L_nodes[j];
         p = tree[u].parent;
         if (p != NULL_NODE) {
-            if (check_recombination_required) {
-                /* A removed node had the inherited value and flag, so the
-                 * cached values below it stay valid. */
-                L_p = tsls_hmm_get_inherited_likelihood_and_flag(
-                    self, p, &R_p);
-                if (L[u].value == L_p && tree[u].recombination_required == R_p) {
-                    L[u].value = NULL_LIKELIHOOD;
+            /* A removed node had the inherited value (and flag), so walks
+             * through it to its own ancestor give the same answer. */
+            a = tsls_hmm_find_listed(self, p);
+            if (L[u].value == L[a].value
+                && (!check_recombination_required
+                    || tree[u].recombination_required
+                           == tree[a].recombination_required)) {
+                L[u].value = NULL_LIKELIHOOD;
+                tsls_hmm_mark_unlisted(self, u, a);
+                if (check_recombination_required) {
                     tsls_hmm_record_removed(self, u);
-                }
-            } else {
-                L_p = tsls_hmm_get_inherited_likelihood(self, p);
-                if (L[u].value == L_p) {
-                    L[u].value = NULL_LIKELIHOOD;
                 }
             }
         }
@@ -1509,7 +1519,6 @@ tsls_hmm_coalesce_likelihoods(
         }
     }
     self->num_likelihood_nodes = num_likelihood_nodes;
-    tsls_hmm_clear_likelihood_caches(self);
 }
 
 static inline double
@@ -1719,7 +1728,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
             tree[u].recombination_required = true;
         }
         allele = get_listed_allelic_state(
-            tree, u, ancestral_state, touched, &num_touched);
+            tree, L, u, ancestral_state, touched, &num_touched);
         p_e = emission_probability(allele, state, mu, num_alleles);
         if (track_changes && state != TSLS_MISSING_DATA && allele != state) {
             old_flag[j] = (int8_t) (old_flag[j] + 4);
@@ -1879,14 +1888,14 @@ tsls_hmm_process_site_sparse(tsls_hmm_t *self, const tsk_id_t site, const allele
     const double p_recomb = rho / n;
     mutation_range_t ranges[SPARSE_MAX_MUTATIONS];
     int32_t bounds[2 * SPARSE_MAX_MUTATIONS + 2];
-    double value, old_value, p_no_recomb, p_t, L_p;
+    double value, old_value, p_no_recomb, p_t;
     int8_t old_flag, R_p;
     allele_t allele;
     bool mismatch;
     int j, k, num_ranges, num_bounds, num_nodes, num_changed;
     int32_t x;
     tsk_size_t i;
-    tsk_id_t u, p;
+    tsk_id_t u, p, a;
 
     if (mutations_stop - mutations_start > SPARSE_MAX_MUTATIONS) {
         goto out;
@@ -1932,7 +1941,6 @@ tsls_hmm_process_site_sparse(tsls_hmm_t *self, const tsk_id_t site, const allele
                         ranges, num_ranges, preorder[p], ancestral_state)
                     != state)) {
                 value = tsls_hmm_get_inherited_likelihood_and_flag(self, p, &R_p);
-                tsls_hmm_clear_likelihood_caches(self);
                 tsls_hmm_add_likelihood_sorted(self, u, value);
                 tree[u].recombination_required = R_p;
                 tsls_hmm_add_site_node(self, u, &num_nodes);
@@ -2007,13 +2015,13 @@ tsls_hmm_process_site_sparse(tsls_hmm_t *self, const tsk_id_t site, const allele
         u = nodes[j];
         p = tree[u].parent;
         if (p != NULL_NODE) {
-            L_p = tsls_hmm_get_inherited_likelihood_and_flag(self, p, &R_p);
-            if (L[u].value == L_p && tree[u].recombination_required == R_p) {
-                tsls_hmm_remove_likelihood_sorted(self, u);
+            a = tsls_hmm_find_listed(self, p);
+            if (L[u].value == L[a].value
+                && tree[u].recombination_required == tree[a].recombination_required) {
+                tsls_hmm_remove_likelihood_sorted(self, u, a);
             }
         }
     }
-    tsls_hmm_clear_likelihood_caches(self);
     ret = tsls_hmm_store_traceback(self, site, nodes, num_nodes, NULL, 0);
     if (ret != 0) {
         goto out;
