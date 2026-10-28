@@ -1,7 +1,6 @@
 """
 Tests for computing per-site recombination probabilities from a constant
-rate or a genetic map. The map tests are copied from tsinfer's
-tests/test_matching.py (commit 16c4567), and use msprime as an oracle.
+rate or a genetic map.
 """
 
 import msprime
@@ -376,9 +375,9 @@ class TestRecombinationProbabilities:
 
 class TestHmmWithRecombinationRate:
     """
-    Per-site probabilities from a rate change the path tsls.Hmm finds. As in
-    tsinfer's TestMatcher, the recombinant [1, 1, 1] is matched against A,
-    carrying the derived allele at the first two sites, and B at the third.
+    Per-site probabilities from a rate change the path tsls.Hmm finds. The
+    recombinant [1, 1, 1] is matched against A, carrying the derived allele at
+    the first two sites, and B at the third.
     """
 
     positions = np.array([10, 20, 30])

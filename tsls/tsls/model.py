@@ -144,8 +144,6 @@ def read_genetic_map(path, positions):
     interpolated between map entries, with an implicit entry of 0 cM at
     position 0. Beyond the last entry the recombination rate is zero. This
     follows ``msprime.RateMap.read_hapmap``.
-
-    Copied from tsinfer.matching.read_genetic_map.
     """
     map_position, map_cm = np.loadtxt(
         path, skiprows=1, usecols=(1, 3), unpack=True, ndmin=2
@@ -173,7 +171,7 @@ def recombination_probabilities(recombination_rate, positions):
     (1 - exp(-2d)) / 2. The first site has probability 0.
 
     The result is the per-site recombination probability r_j taken by
-    tsls.Hmm. Copied from tsinfer.matching.recombination_probabilities.
+    tsls.Hmm.
     """
     positions = np.asarray(positions, dtype=np.float64)
     if isinstance(recombination_rate, (str, pathlib.Path)):

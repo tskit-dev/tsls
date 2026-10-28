@@ -385,6 +385,59 @@ for the whole group divided by the number of haplotypes.
 - The cost is in the last few ancestor groups and the samples. Matching
   all 6,404 samples takes about 4.5 CPU hours with either engine.
 
+### Recombination maps
+
+tsinfer can set a source's `recombination_rate` to a rate per bp or a
+HapMap genetic map, giving per-site recombination probabilities with
+Haldane's map function (`tsls.model.recombination_probabilities`, copied
+from tsinfer). `run.py --recombination-rate RATE_OR_MAP` (with an optional
+`--mismatch`) reruns a workload with these probabilities in place of the
+`model.json` rho, so the paths can be compared with the ones tsinfer found
+with constant `rho = 0.01`. A config with `recombination_rate` is also read
+into `model.json`. To get the HapMap II GRCh38 chr20 map:
+
+```
+uv run --with stdpopsim python genetic_map.py data/genetic_maps/chr20_HapMapII_GRCh38.txt
+uv run python run.py data/tgp_chr20p/samples/reference.trees data/tgp_chr20p/samples \
+    --recombination-rate data/genetic_maps/chr20_HapMapII_GRCh38.txt \
+    -o results/recomb_samples_map_mu1e-20.csv
+```
+
+#### Findings (October 2026)
+
+Sample matching on chr20p (the `samples` workload), run 4 at a time on
+the 4-core machine. On these sites the map gives 0.508 Morgans in total,
+with per-site probabilities from 3e-12 to 6e-4 (median 8.4e-8), against
+tsinfer's constant 0.01. With n = 432,853 nodes the median switch odds
+fall from 2.3e-8 to 1.9e-13. tsls's probabilities are identical to
+tsinfer's.
+
+| recombination | mu | engine | queries | segments | mismatches | tsinfer breakpoints kept | mean time (s) | mean memory (MiB) | mean traceback |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.01 (tsinfer) | 1e-20 | tsls | 200 | 244 | 0 | 100% | 2.2 | 12 | 13 |
+| map | 1e-20 | tsinfer | 33 | 159 | 20.7 | | 12.2 | 349 | 113 |
+| map | 1e-20 | tsls | 30 | 166 | 21.6 | 3.1% | 4.5 | 36 | 106 |
+| map | 1e-8 | tsls | 200 | 130 | 86.8 | 2.0% | 4.6 | 37 | 114 |
+| map | 1e-4 | tsls | 200 | 108 | 130 | 1.7% | 4.9 | 38 | 134 |
+
+(Segments for the tsinfer row are over its 33 queries; on the 30 queries
+both engines ran they agree exactly.)
+
+- The map changes sample paths completely. No query has tsinfer's path,
+  and only 2-3% of tsinfer's breakpoints are kept: breakpoints move into
+  the map's hotspots.
+- There are mismatches even with `mu = 1e-20`. With constant rho, a
+  difference at one site is explained by switching away and back, at odds
+  about q^2 = 5e-16, far more than e = 1e-20. Under the map q^2 is about
+  4e-26 at the median, so one mismatch is cheaper than two switches. Larger
+  mu trades segments for mismatches, as expected.
+- The map makes matching 2-5 times slower, with 3 times the memory and 8
+  times the traceback: with smaller switch odds, likelihoods are less often
+  equal, so fewer are merged. tsinfer-hmm's memory grows much more than
+  tsls's (349 against 36 MiB).
+- tsinfer-hmm and tsls find the same paths under the map, as with
+  constant rho.
+
 ### tsls against tsinfer-hmm: where the time goes
 
 This section describes the engine before the `tsls_hmm_t` refactor (when
