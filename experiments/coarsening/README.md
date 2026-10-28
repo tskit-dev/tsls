@@ -9,13 +9,18 @@ kinds of coarsening:
 - **Input:** coarsen the per-site recombination probabilities r before
   running the HMM.
 - **Values:** round each normalised Viterbi value to the nearest
-  exp(−k d) with the experimental `Hmm(log_value_step=d)`, so that values
-  within a factor of about e^d become equal and can be coalesced. With a
-  prune threshold t there are at most about ln(1/t)/d distinct values.
+  exp(−k d), so that values within a factor of about e^d become equal and
+  can be coalesced. With a prune threshold t there are at most about
+  ln(1/t)/d distinct values. This used an experimental
+  `Hmm(log_value_step=d)` option, which didn't pay off and has been
+  removed from the engine; `coarsening.py` now runs only the input
+  variants. To rerun the value rounding, check out commit `69af95b`
+  (which added the option) and restore the value-step strategies from
+  `b3d970f`.
 
 ```
 uv sync
-uv run python coarsening.py -t 2         # about 5 minutes on 4 cores
+uv run python coarsening.py -t 2         # about 4 minutes on 4 cores
 uv run python coarsening.py --analyse-only
 ```
 

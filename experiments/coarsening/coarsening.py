@@ -21,13 +21,14 @@ Input coarsening (per-site recombination probabilities r):
 - smooth_W: the map averaged over windows of W bp;
 - round_F: each r rounded to the nearest power of F (in log space).
 
-Value coarsening (Hmm(log_value_step=d)): the map, with each normalised
-Viterbi value rounded to the nearest exp(-k d).
+Value coarsening, rounding each normalised Viterbi value to the nearest
+exp(-k d), used the experimental Hmm(log_value_step=d), which has since
+been removed from the engine (see README.md).
 
 Every path is scored under the map: loss is the map's optimal log odds
 minus the log odds of the path, so 0 means optimal under the map.
 
-    uv run python coarsening.py -t 2            # about 10 minutes
+    uv run python coarsening.py -t 2            # about 4 minutes
     uv run python coarsening.py --analyse-only
 """
 
@@ -65,7 +66,6 @@ MISMATCH = [1e-20, 1e-8]
 TGP_RHO = 0.01
 SMOOTH_WINDOWS = [100_000, 1_000_000]
 ROUND_FACTORS = [2, 10]
-LOG_VALUE_STEPS = [0.1, 0.5, 1, float(np.log(10))]
 
 
 def load_reference():
@@ -152,9 +152,6 @@ def strategies():
         out.append(("input", "", f"smooth_{window // 1000}kb", {}))
     for factor in ROUND_FACTORS:
         out.append(("input", "", f"round_{factor}", {}))
-    for step in LOG_VALUE_STEPS:
-        out.append(("value_step", f"{step:.3g}", "map", {"log_value_step": step}))
-    out.append(("both", "2.3", "round_10", {"log_value_step": float(np.log(10))}))
     return out
 
 
