@@ -134,7 +134,7 @@ def n_weighted_rho(rho, n):
     Return the rho for weight_by_n=True with the same ratio of switching to a
     given node to staying as rho with weight_by_n=False.
     """
-    return rho / (rho + (1 - rho) / n)
+    return float(tsls.model.recombination_probability(rho, n))
 
 
 def make_matcher(
@@ -148,14 +148,22 @@ def make_matcher(
     count_distinct=False,
     tree_sequence=None,
 ):
+    """
+    Return a tsls.Hmm. With weight_by_n=False, rho is the recombination of
+    an engine that does not divide by n, as in tsinfer-hmm and sc2ts. tsls
+    always divides by n, so we give it the recombination probability with
+    the same switch odds. This gives the same Viterbi paths and posteriors
+    (docs/likelihood_model.md); only the forward log likelihood differs.
+    """
     m = ts.num_sites
     if tree_sequence is None:
         tree_sequence = tsls.TreeSequence(ts, alleles=ALLELES)
+    if not weight_by_n:
+        rho = n_weighted_rho(rho, ts.num_nodes)
     return tsls.Hmm(
         tree_sequence,
         np.full(m, rho),
         np.full(m, mu),
-        weight_by_n=weight_by_n,
         likelihood_threshold=likelihood_threshold,
         pruning=pruning,
         count_distinct=count_distinct,
@@ -347,9 +355,9 @@ class ModelCalibration(Test):
     exactly from the engine's prior on an msprime ARG and add mutations with
     the engine's emission model. Forward-backward posteriors should then be
     calibrated: of the (site, node) pairs given posterior p, a fraction p
-    should be the true node. With weight_by_n=False the prior is an
-    unnormalised measure over paths, but we sample from it exactly, so the
-    posteriors should still be calibrated.
+    should be the true node. With weight_by_n=False the prior over paths is
+    a constant times that of the model tsls runs (see make_matcher), so we
+    sample from it exactly, and the posteriors should still be calibrated.
     """
 
     num_args = 20

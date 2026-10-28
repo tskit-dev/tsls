@@ -35,7 +35,6 @@
 
 /* Matcher flags */
 #define TSLS_EXTENDED_CHECKS     (1 << 0)
-#define TSLS_DISABLE_WEIGHT_BY_N (1 << 1)
 #define TSLS_COUNT_DISTINCT      (1 << 2)
 /* Process every Viterbi site in full (see tsls_hmm_process_site_sparse) */
 #define TSLS_DISABLE_SPARSE      (1 << 3)
@@ -176,6 +175,9 @@ typedef struct {
     double likelihood_threshold;
     int pruning_mode;
     double pruning_parameter;
+    /* In Viterbi, nodes with normalised values below this are given the
+     * value likelihood_threshold (see tsls_hmm_set_prune_threshold) */
+    double prune_threshold;
     double *recombination_rate;
     double *mismatch_rate;
     /* The per-node state, with the parent links of the quintuply linked
@@ -226,6 +228,15 @@ typedef struct {
     uint32_t *stamp;
     uint32_t current_stamp;
     size_t num_sparse_sites;
+    /* Statistics of the last run: over the sites processed, the total and
+     * maximum length of the likelihood list after each site, and the total
+     * number of nodes whose values were computed (site_num_updated, set by
+     * each site's processing) */
+    size_t stats_num_sites;
+    size_t stats_total_values;
+    size_t stats_max_values;
+    size_t stats_total_updated;
+    size_t site_num_updated;
     tsi_blkalloc_t traceback_allocator;
     size_t total_traceback_size;
     /* The total number of distinct likelihood values over sites, if
@@ -250,7 +261,10 @@ int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     const double *recombination_rate, const double *mismatch_rate,
     double likelihood_threshold, int flags);
 int tsls_hmm_set_pruning(tsls_hmm_t *self, int mode, double parameter);
+int tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold);
 int tsls_hmm_free(tsls_hmm_t *self);
+double tsls_hmm_get_mean_num_values(const tsls_hmm_t *self);
+double tsls_hmm_get_mean_num_updated(const tsls_hmm_t *self);
 int tsls_hmm_find_path(tsls_hmm_t *self, tsk_id_t start, tsk_id_t end,
     const allele_t *haplotype, allele_t *matched_haplotype, size_t *path_length,
     double *path_left, double *path_right, tsk_id_t *path_parent);

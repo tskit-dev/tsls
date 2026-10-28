@@ -352,13 +352,6 @@ class TestSubArgs:
 
 
 class TestParameters:
-    def test_n_weighted_rho_equivalent_ratio(self):
-        r = 1e-6
-        n = 1000
-        rho = engines.n_weighted_rho(r, n)
-        ratio = (rho / n) / (1 - rho + rho / n)
-        assert ratio == pytest.approx(r)
-
     def test_path_to_segments(self):
         positions = np.array([1.0, 3, 5, 7])
         left, right, parent = engines.path_to_segments(

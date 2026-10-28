@@ -229,6 +229,19 @@ EXAMPLES = {
 }
 ALLELES = ACGT + ["-"]
 PARAMS = [(1e-2, 1e-2), (0.2, 0.05), (1e-4, 1e-3)]
+# How the recombination parameter is given: as the probability r, or as the
+# switch odds q (the recombination of an engine that does not divide by n,
+# as sc2ts uses)
+RATES = ["probability", "odds"]
+
+
+def model_rho(ts, rho, rate):
+    """
+    Return the recombination probability for the specified parameter.
+    """
+    if rate == "probability":
+        return rho
+    return tsls.model.recombination_probability(rho, ts.num_nodes)
 
 
 def queries(ts, A, present):
@@ -253,19 +266,18 @@ def queries(ts, A, present):
     return [np.asarray(h, dtype=np.int8) for h in H]
 
 
-def make_matcher(ts, rho, mu, weight_by_n, likelihood_threshold=None):
+def make_matcher(ts, rho, mu, likelihood_threshold=None, prune_threshold=None):
     m = ts.num_sites
     am = tsls.Hmm(
         ts,
         np.full(m, rho),
         np.full(m, mu),
         alleles=ALLELES,
-        weight_by_n=weight_by_n,
         likelihood_threshold=likelihood_threshold,
+        prune_threshold=prune_threshold,
         extended_checks=True,
     )
-    n = ts.num_nodes if weight_by_n else 1
-    return am, n
+    return am, ts.num_nodes
 
 
 def path_by_site(ts, left, right, parent, start=0, end=None):
@@ -300,12 +312,13 @@ class TestExamples:
         assert np.any(np.bincount(ts.mutations_site) > 1)
 
 
-@pytest.mark.parametrize("weight_by_n", [True, False])
+@pytest.mark.parametrize("rate", RATES)
 @pytest.mark.parametrize(("rho", "mu"), PARAMS)
 class TestAgainstDense:
-    def test_viterbi(self, example, weight_by_n, rho, mu):
+    def test_viterbi(self, example, rate, rho, mu):
         ts, A, present, continuous = example
-        am, n = make_matcher(ts, rho, mu, weight_by_n)
+        rho = model_rho(ts, rho, rate)
+        am, n = make_matcher(ts, rho, mu)
         m = ts.num_sites
         rho_a = np.full(m, rho)
         mu_a = np.full(m, mu)
@@ -323,9 +336,10 @@ class TestAgainstDense:
             )
             assert value == pytest.approx(optimum, rel=1e-9)
 
-    def test_forward_backward(self, example, weight_by_n, rho, mu):
+    def test_forward_backward(self, example, rate, rho, mu):
         ts, A, present, continuous = example
-        am, n = make_matcher(ts, rho, mu, weight_by_n)
+        rho = model_rho(ts, rho, rate)
+        am, n = make_matcher(ts, rho, mu)
         m = ts.num_sites
         rho_a = np.full(m, rho)
         mu_a = np.full(m, mu)
@@ -343,10 +357,11 @@ class TestAgainstDense:
             np.testing.assert_allclose(bm.decode(), B, rtol=1e-12, atol=1e-300)
             np.testing.assert_allclose(np.sum(F * B, axis=1), 1)
 
-    def test_likelihood_threshold(self, example, weight_by_n, rho, mu):
+    def test_likelihood_threshold(self, example, rate, rho, mu):
         ts, A, present, continuous = example
         threshold = 1e-3
-        am, n = make_matcher(ts, rho, mu, weight_by_n, likelihood_threshold=threshold)
+        rho = model_rho(ts, rho, rate)
+        am, n = make_matcher(ts, rho, mu, likelihood_threshold=threshold)
         m = ts.num_sites
         rho_a = np.full(m, rho)
         mu_a = np.full(m, mu)
@@ -390,13 +405,13 @@ class TestViterbiPaths:
         # needs two switches, so a node in every tree is preferred.
         ts = gap_ts()
         A, _, _ = dense.node_states(ts, ALLELES)
-        am, _ = make_matcher(ts, 1e-4, 1e-2, True)
+        am, _ = make_matcher(ts, 1e-4, 1e-2)
         h = A[:, 3]
         match = np.zeros(ts.num_sites, dtype=np.int8)
         _, _, parent = am.find_path(h, 0, ts.num_sites, match)
         assert 3 not in parent
         # With a high recombination rate, we copy node 3 in two segments.
-        am, _ = make_matcher(ts, 0.3, 1e-3, True)
+        am, _ = make_matcher(ts, 0.3, 1e-3)
         left, right, parent = am.find_path(h, 0, ts.num_sites, match)
         # Breakpoints are at site positions: the first site after the gap.
         assert list(parent) == [3, 3]
@@ -409,7 +424,7 @@ class TestViterbiPaths:
         # copied exactly with no recombination.
         ts = EXAMPLES[name]()
         A, _, continuous = dense.node_states(ts, ALLELES)
-        am, _ = make_matcher(ts, 1e-4, 1e-3, True)
+        am, _ = make_matcher(ts, 1e-4, 1e-3)
         m = ts.num_sites
         always = np.all(continuous, axis=0)
         for u in range(ts.num_nodes):
@@ -431,7 +446,7 @@ class TestViterbiPaths:
         ts = two_tree_ts()
         A, _, _ = dense.node_states(ts, ALLELES)
         h = np.concatenate([A[:3, 4], A[3:, 7]])
-        am, _ = make_matcher(ts, 1e-2, 1e-3, True)
+        am, _ = make_matcher(ts, 1e-2, 1e-3)
         match = np.zeros(ts.num_sites, dtype=np.int8)
         left, right, parent = am.find_path(h, 0, ts.num_sites, match)
         np.testing.assert_array_equal(match, h)
@@ -444,7 +459,7 @@ class TestViterbiPaths:
         ts = isolated_root_ts()
         A, present, _ = dense.node_states(ts, ALLELES)
         assert not np.any(present[:, 0])
-        am, _ = make_matcher(ts, 0.2, 0.05, True)
+        am, _ = make_matcher(ts, 0.2, 0.05)
         for h in queries(ts, A, present):
             match = np.zeros(ts.num_sites, dtype=np.int8)
             _, _, parent = am.find_path(h, 0, ts.num_sites, match)
@@ -456,7 +471,7 @@ class TestViterbiPaths:
         h = A[:, 0].copy()
         h[0] = -1
         h[-1] = -1
-        am, _ = make_matcher(ts, 1e-4, 1e-3, True)
+        am, _ = make_matcher(ts, 1e-4, 1e-3)
         match = np.zeros(ts.num_sites, dtype=np.int8)
         left, right, parent = am.find_path(h, 1, ts.num_sites - 1, match)
         assert list(parent) == [0]
@@ -472,7 +487,7 @@ class TestViterbiPaths:
         ts = EXAMPLES[name]()
         A, present, continuous = dense.node_states(ts, ALLELES)
         rho, mu = 0.05, 0.02
-        am, n = make_matcher(ts, rho, mu, True)
+        am, n = make_matcher(ts, rho, mu)
         m = ts.num_sites
         for h in queries(ts, A, present)[:4]:
             for start in range(m):
@@ -564,7 +579,7 @@ class TestInterface:
     @pytest.mark.parametrize("state", [5, -2])
     def test_bad_haplotype_allele(self, state):
         ts = single_tree_ts()
-        am, _ = make_matcher(ts, 1e-2, 1e-2, True)
+        am, _ = make_matcher(ts, 1e-2, 1e-2)
         h = np.zeros(ts.num_sites, dtype=np.int8)
         h[1] = state
         match = np.zeros(ts.num_sites, dtype=np.int8)
@@ -576,7 +591,7 @@ class TestInterface:
     @pytest.mark.parametrize(("start", "end"), [(0, 0), (-1, 2), (2, 1), (0, 5)])
     def test_bad_site_range(self, start, end):
         ts = single_tree_ts()
-        am, _ = make_matcher(ts, 1e-2, 1e-2, True)
+        am, _ = make_matcher(ts, 1e-2, 1e-2)
         h = np.zeros(ts.num_sites, dtype=np.int8)
         match = np.zeros(ts.num_sites, dtype=np.int8)
         with pytest.raises(tsls.LibraryError, match="site range"):
@@ -588,7 +603,7 @@ class TestInterface:
             tsls.Hmm(ts, np.zeros(1), np.zeros(ts.num_sites))
         with pytest.raises(ValueError, match="mismatch"):
             tsls.Hmm(ts, np.zeros(ts.num_sites), np.zeros(1))
-        am, _ = make_matcher(single_tree_ts(), 1e-2, 1e-2, True)
+        am, _ = make_matcher(single_tree_ts(), 1e-2, 1e-2)
         with pytest.raises(ValueError):
             am.forward_matrix(np.zeros(1, dtype=np.int8))
         h = np.zeros(ts.num_sites, dtype=np.int8)
@@ -597,14 +612,14 @@ class TestInterface:
 
     def test_bad_normalisation_factor(self):
         ts = single_tree_ts()
-        am, _ = make_matcher(ts, 1e-2, 1e-2, True)
+        am, _ = make_matcher(ts, 1e-2, 1e-2)
         h = np.zeros(ts.num_sites, dtype=np.int8)
         with pytest.raises(tsls.LibraryError, match="normalisation"):
             am.backward_matrix(h, np.zeros(ts.num_sites))
 
     def test_match_impossible(self):
         ts = single_tree_ts()
-        am, _ = make_matcher(ts, 0, 0, True)
+        am, _ = make_matcher(ts, 0, 0)
         h = np.full(ts.num_sites, 4, dtype=np.int8)
         match = np.zeros(ts.num_sites, dtype=np.int8)
         with pytest.raises(tsls.MatchImpossible):
@@ -627,7 +642,7 @@ class TestInterface:
 
     def test_memory_stats(self):
         ts = two_tree_ts()
-        am, _ = make_matcher(ts, 1e-2, 1e-2, True)
+        am, _ = make_matcher(ts, 1e-2, 1e-2)
         assert am.total_memory > 0
         h = np.zeros(ts.num_sites, dtype=np.int8)
         match = np.zeros(ts.num_sites, dtype=np.int8)
@@ -639,7 +654,7 @@ class TestInterface:
         # same results.
         ts = two_tree_ts()
         A, present, _ = dense.node_states(ts, ALLELES)
-        am, _ = make_matcher(ts, 0.2, 0.05, True)
+        am, _ = make_matcher(ts, 0.2, 0.05)
         h = queries(ts, A, present)[-1]
         m = ts.num_sites
         results = []
@@ -656,7 +671,7 @@ class TestInterface:
 
     def test_compressed_matrix(self):
         ts = single_tree_ts()
-        am, _ = make_matcher(ts, 1e-2, 1e-2, True)
+        am, _ = make_matcher(ts, 1e-2, 1e-2)
         fm = am.forward_matrix(np.zeros(ts.num_sites, dtype=np.int8))
         assert fm.num_sites == ts.num_sites
         nodes, values = fm.get_site(0)
@@ -709,20 +724,22 @@ class TestPruning:
         assert am2.mean_traceback_size < size1
 
     @pytest.mark.parametrize("name", list(EXAMPLES))
-    @pytest.mark.parametrize("weight_by_n", [True, False])
-    def test_lossless_floor(self, name, weight_by_n):
-        # Values below t = (rho / n) / (1 - rho + rho / n) are beaten by
-        # recombination at the next site, so flooring at t does not change
-        # the Viterbi likelihood.
+    @pytest.mark.parametrize("rate", RATES)
+    @pytest.mark.parametrize("kind", ["floor", "prune"])
+    def test_lossless_threshold(self, name, rate, kind):
+        # Values below the switch odds q = (rho / n) / (1 - rho + rho / n)
+        # are beaten by recombination at the next site, so flooring or
+        # pruning at q does not change the Viterbi likelihood.
         ts = EXAMPLES[name]()
         A, present, continuous = dense.node_states(ts, ALLELES)
-        rho, mu = 0.05, 0.02
-        n = ts.num_nodes if weight_by_n else 1
-        threshold = (rho / n) / (1 - rho + rho / n)
+        rho, mu = model_rho(ts, 0.05, rate), 0.02
+        n = ts.num_nodes
+        threshold = tsls.model.lossless_threshold(rho, n)
         m = ts.num_sites
-        am, _ = make_matcher(
-            ts, rho, mu, weight_by_n, likelihood_threshold=threshold * (1 - 1e-12)
-        )
+        if kind == "floor":
+            am, _ = make_matcher(ts, rho, mu, likelihood_threshold=threshold)
+        else:
+            am, _ = make_matcher(ts, rho, mu, prune_threshold=threshold)
         rho_a = np.full(m, rho)
         mu_a = np.full(m, mu)
         for h in queries(ts, A, present):
@@ -763,12 +780,12 @@ class TestPruning:
 
 class TestViterbiMatrix:
     @pytest.mark.parametrize("name", list(EXAMPLES))
-    @pytest.mark.parametrize("weight_by_n", [True, False])
-    def test_against_dense(self, name, weight_by_n):
+    @pytest.mark.parametrize("rate", RATES)
+    def test_against_dense(self, name, rate):
         ts = EXAMPLES[name]()
         A, present, continuous = dense.node_states(ts, ALLELES)
-        rho, mu = 0.05, 0.02
-        am, n = make_matcher(ts, rho, mu, weight_by_n)
+        rho, mu = model_rho(ts, 0.05, rate), 0.02
+        am, n = make_matcher(ts, rho, mu)
         m = ts.num_sites
         rho_a = np.full(m, rho)
         mu_a = np.full(m, mu)
@@ -781,9 +798,7 @@ class TestViterbiMatrix:
             np.testing.assert_allclose(vm.decode(), V, rtol=1e-12, atol=1e-300)
             # The same path as find_path processing every site in full, as
             # viterbi_matrix does
-            full = tsls.Hmm(
-                ts, rho_a, mu_a, alleles=ALLELES, weight_by_n=weight_by_n, sparse=False
-            )
+            full = tsls.Hmm(ts, rho_a, mu_a, alleles=ALLELES, sparse=False)
             match = np.zeros(m, dtype=np.int8)
             expected = full.find_path(h, 0, m, match)
             for x, y in zip(path, expected):
@@ -793,7 +808,7 @@ class TestViterbiMatrix:
     def test_traceback_lists(self):
         ts = two_tree_ts()
         A, present, _ = dense.node_states(ts, ALLELES)
-        am, _ = make_matcher(ts, 0.05, 0.02, True)
+        am, _ = make_matcher(ts, 0.05, 0.02)
         for h in queries(ts, A, present):
             _, _, vm = am.viterbi_matrix(h)
             sizes = np.diff(vm.offsets)
@@ -804,7 +819,7 @@ class TestViterbiMatrix:
     def test_start_end(self):
         ts = two_tree_ts()
         A, _, _ = dense.node_states(ts, ALLELES)
-        am, _ = make_matcher(ts, 0.05, 0.02, True)
+        am, _ = make_matcher(ts, 0.05, 0.02)
         _, _, vm = am.viterbi_matrix(A[:, 0], 1, ts.num_sites - 1)
         sizes = np.diff(vm.offsets)
         assert sizes[0] == 0
@@ -813,7 +828,7 @@ class TestViterbiMatrix:
 
     def test_forward_has_no_flags(self):
         ts = single_tree_ts()
-        am, _ = make_matcher(ts, 0.05, 0.02, True)
+        am, _ = make_matcher(ts, 0.05, 0.02)
         fm = am.forward_matrix(np.zeros(ts.num_sites, dtype=np.int8))
         assert fm.flags is None
 
@@ -821,7 +836,7 @@ class TestViterbiMatrix:
     def test_dump_load(self, tmp_path, algorithm):
         ts = two_tree_ts()
         A, _, _ = dense.node_states(ts, ALLELES)
-        am, _ = make_matcher(ts, 0.05, 0.02, True)
+        am, _ = make_matcher(ts, 0.05, 0.02)
         h = A[:, 1]
         if algorithm == "viterbi":
             _, _, cm = am.viterbi_matrix(h)
@@ -919,11 +934,11 @@ class TestSparse:
     in full.
     """
 
-    def matchers(self, ts, rho, mu, weight_by_n, likelihood_threshold=None):
+    def matchers(self, ts, rho, mu, likelihood_threshold=None, prune_threshold=None):
         kwargs = dict(
             alleles=ALLELES,
-            weight_by_n=weight_by_n,
             likelihood_threshold=likelihood_threshold,
+            prune_threshold=prune_threshold,
             extended_checks=True,
         )
         return (
@@ -933,16 +948,16 @@ class TestSparse:
 
     @pytest.mark.parametrize("seed", range(6))
     @pytest.mark.parametrize("num_trees_hint", [0, 2, 10])
-    @pytest.mark.parametrize("weight_by_n", [True, False])
+    @pytest.mark.parametrize("rate", RATES)
     @pytest.mark.parametrize("likelihood_threshold", [None, 1e-3])
-    def test_against_full(self, seed, num_trees_hint, weight_by_n, likelihood_threshold):
+    def test_against_full(self, seed, num_trees_hint, rate, likelihood_threshold):
         ts = wright_fisher_ts(seed, num_trees_hint=num_trees_hint)
         A, present, continuous = dense.node_states(ts, ALLELES)
         m = ts.num_sites
-        rho = np.full(m, 0.02)
+        rho = model_rho(ts, np.full(m, 0.02), rate)
         mu = np.full(m, 0.01)
-        n = ts.num_nodes if weight_by_n else 1
-        sparse, full = self.matchers(ts, rho, mu, weight_by_n, likelihood_threshold)
+        n = ts.num_nodes
+        sparse, full = self.matchers(ts, rho, mu, likelihood_threshold)
         num_sparse_sites = 0
         for h in noisy_queries(ts, A, present, seed):
             values = []
@@ -972,9 +987,9 @@ class TestSparse:
         ts = wright_fisher_ts(seed, num_trees_hint=2)
         A, present, continuous = dense.node_states(ts, ALLELES)
         m = ts.num_sites
-        rho = np.full(m, 0.02)
+        rho = model_rho(ts, np.full(m, 0.02), "odds")
         mu = np.full(m, 0.01)
-        sparse, full = self.matchers(ts, rho, mu, False)
+        sparse, full = self.matchers(ts, rho, mu)
         for h in noisy_queries(ts, A, present, seed)[:2]:
             for start, end in [(0, 30), (10, 50), (25, 60), (59, 60)]:
                 values = []
@@ -986,7 +1001,9 @@ class TestSparse:
                     cont = continuous[start:end].copy()
                     cont[0] = present[start]
                     args = (*window, cont, h[start:end], rho[start:end], mu[start:end])
-                    values.append(dense.path_log_likelihood(*args, len(ALLELES), 1, path))
+                    values.append(
+                        dense.path_log_likelihood(*args, len(ALLELES), ts.num_nodes, path)
+                    )
                 assert values[0] == pytest.approx(values[1], rel=1e-9)
 
     def test_rates_change(self):
@@ -997,7 +1014,7 @@ class TestSparse:
         m = ts.num_sites
         rho = np.repeat([0.01, 0.05, 0.02], [20, 20, m - 40])
         mu = np.repeat([0.01, 0.02], [30, m - 30])
-        sparse, full = self.matchers(ts, rho, mu, True)
+        sparse, full = self.matchers(ts, rho, mu)
         for h in noisy_queries(ts, A, present, 1):
             values = []
             for am in [sparse, full]:
@@ -1027,3 +1044,44 @@ class TestSparse:
         )
         am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
         assert am.num_sparse_sites == 0
+
+
+class TestNodeStatistics:
+    def test_forward_backward_updated_match_stored(self):
+        ts = wright_fisher_ts(0, num_trees_hint=3)
+        A, present, _ = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        am = tsls.Hmm(ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES)
+        for h in noisy_queries(ts, A, present, 0):
+            fm = am.forward_matrix(h)
+            # Each site's values are stored before they are coalesced
+            assert am.mean_num_updated == pytest.approx(np.mean(np.diff(fm.offsets)))
+            assert 0 < am.mean_num_values <= am.max_num_values
+            assert am.max_num_values <= np.max(np.diff(fm.offsets))
+            bm = am.backward_matrix(h, fm.normalisation_factor)
+            assert am.mean_num_updated == pytest.approx(np.mean(np.diff(bm.offsets)))
+
+    def test_viterbi_sparse_updates_fewer(self):
+        ts = wright_fisher_ts(1, num_trees_hint=0)
+        A, present, _ = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        for h in noisy_queries(ts, A, present, 1):
+            stats = {}
+            for sparse in [True, False]:
+                am = tsls.Hmm(
+                    ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES, sparse=sparse
+                )
+                am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
+                stats[sparse] = (am.mean_num_updated, am.mean_num_values, am.num_sparse_sites)
+            if stats[True][2] > 0:
+                assert stats[True][0] < stats[False][0]
+            assert stats[False][0] >= stats[False][1]
+
+    def test_window_counts_sites(self):
+        ts = wright_fisher_ts(2, num_trees_hint=2)
+        m = ts.num_sites
+        am = tsls.Hmm(ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES)
+        assert am.mean_num_values == 0
+        h = np.zeros(m, dtype=np.int8)
+        am.find_path(h, 10, 20, np.zeros(m, dtype=np.int8))
+        assert am.max_num_values >= am.mean_num_values > 0

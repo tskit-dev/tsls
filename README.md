@@ -37,7 +37,12 @@ module `_tsls`). It is based on the tsinfer engine:
   and backward algorithms (`forward_matrix`, `backward_matrix`), which
   return compressed matrices.
 - It uses tsinfer's compression (a node's value is dropped when it
-  equals its parent's), a likelihood threshold and `weight_by_n`.
+  equals its parent's).
+- It has one likelihood model, with recombination always divided by the
+  number of nodes, and exact Viterbi prune thresholds derived from it
+  (`docs/likelihood_model.md`, `tsls.model`). sc2ts's `weight_by_n=False`
+  model is the same model with
+  `r = tsls.model.recombination_probability(rho, num_nodes)`.
 - It supports multiple mutations per site and any number of alleles,
   read from the tree sequence and numbered at each site as tskit does
   (or by their index in a given list of alleles), and any (including

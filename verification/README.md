@@ -43,8 +43,11 @@ should be calibrated.
   of Viterbi and posterior-max decoding, the mean posterior of the true
   node, and Viterbi against true switch counts, as μ or ρ varies.
 
-With `weight_by_n=False` the prior over paths is an unnormalised measure.
-We sample from it exactly, so the posteriors should still be calibrated.
+With `weight_by_n=False` (rho given as the recombination of an engine that
+does not divide by n), the prior over paths is a constant times that of
+the model tsls runs, with `r = tsls.model.recombination_probability(rho, n)`
+(see `docs/likelihood_model.md`). We sample from it exactly, so the
+posteriors should still be calibrated.
 
 ## Held-out sample threading (`HeldOutThreading`)
 

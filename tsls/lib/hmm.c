@@ -9,14 +9,18 @@
  * whose value equals the value it would inherit from its parent. Every root
  * always has a value.
  *
- * The same machinery runs the Viterbi, forward and backward algorithms.
- * At each site, the probability of staying on a node is
- * p * (1 - rho + rho / n) (Viterbi) or p * (1 - rho) + rho / n * S (forward
- * and backward, where S is the total over all states at the previous site),
- * and the probability of switching to a given node is rho / n. If weight_by_n is set n is the
- * number of nodes in the tree sequence, otherwise n = 1. Values are
- * normalised at each site (by the maximum for Viterbi and the sum for
- * forward), and then values below likelihood_threshold are set to it.
+ * The same machinery runs the Viterbi, forward and backward algorithms,
+ * for the model described in docs/likelihood_model.md. At each site we
+ * recombine with probability rho, and then copy a node chosen uniformly
+ * from all n nodes of the tree sequence (the path ends if it isn't in the
+ * tree); otherwise we stay on the same node. So the value of a node becomes
+ * p * (1 - rho + rho / n) or rho / n (Viterbi), or p * (1 - rho) + rho / n * S
+ * (forward and backward, where S is the total over all states at the
+ * previous site). The forward algorithm starts from a uniform distribution
+ * over the n nodes. Values are normalised at each site (by the maximum for
+ * Viterbi and the sum for forward). In Viterbi, values below prune_threshold
+ * are then set to likelihood_threshold; in all the algorithms, values below
+ * likelihood_threshold are set to it.
  *
  * When a node enters the tree it gets the value 0, and so it can only be
  * reached by recombination. When a node leaves the tree, the probability
@@ -769,6 +773,26 @@ tsls_hmm_free(tsls_hmm_t *self)
     return 0;
 }
 
+/* In Viterbi, give the nodes whose normalised values are below the
+ * threshold the value likelihood_threshold. A node with a value below t
+ * has odds less than t of being on an optimal path rather than the best
+ * node at the site, so any path whose odds relative to the best path are at
+ * least t is kept (see docs/likelihood_model.md). Unlike the experimental
+ * pruning, this works with sparse sites. */
+int
+tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold)
+{
+    int ret = 0;
+
+    if (!(threshold >= 0 && threshold <= 1)) {
+        ret = TSLS_ERR_BAD_PRUNING;
+        goto out;
+    }
+    self->prune_threshold = threshold;
+out:
+    return ret;
+}
+
 int
 tsls_hmm_set_pruning(tsls_hmm_t *self, int mode, double parameter)
 {
@@ -1432,11 +1456,19 @@ check_haplotype_state(const tsls_hmm_t *self, tsk_id_t site, allele_t state)
 static inline double
 tsls_hmm_get_n(const tsls_hmm_t *self)
 {
-    double n = 1.0;
-    if (!(self->flags & TSLS_DISABLE_WEIGHT_BY_N)) {
-        n = (double) self->num_nodes;
+    return (double) self->num_nodes;
+}
+
+/* Returns the normalised Viterbi value of a node, with the thresholds
+ * applied. */
+static inline double
+tsls_hmm_normalise_viterbi(const tsls_hmm_t *self, double value, double max_L)
+{
+    value /= max_L;
+    if (value < self->prune_threshold) {
+        value = self->likelihood_threshold;
     }
-    return n;
+    return TSK_MAX(value, self->likelihood_threshold);
 }
 
 /* Compute the number of nodes in the tree that inherit the likelihood of
@@ -1587,6 +1619,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
 
     tsls_hmm_insert_mutation_likelihoods(self, site);
     tsls_hmm_set_allelic_state(self, site);
+    self->site_num_updated = (size_t) self->num_likelihood_nodes;
     max_L = -1;
     max_L_node = NULL_NODE;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
@@ -1633,7 +1666,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     self->max_likelihood_node[site] = max_L_node;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
-        L[u].value = TSK_MAX(L[u].value / max_L, self->likelihood_threshold);
+        L[u].value = tsls_hmm_normalise_viterbi(self, L[u].value, max_L);
         if (track_changes
             && (old_flag[j] >= 3 || L[u].value != old_value[j]
                 || tree[u].recombination_required != old_flag[j])) {
@@ -1858,6 +1891,7 @@ tsls_hmm_process_site_sparse(tsls_hmm_t *self, const tsk_id_t site, const allele
     }
 
     /* Recompute the values, as tsls_hmm_process_site_viterbi does */
+    self->site_num_updated = (size_t) num_nodes;
     num_changed = 0;
     for (j = 0; j < num_nodes; j++) {
         u = nodes[j];
@@ -1874,7 +1908,7 @@ tsls_hmm_process_site_sparse(tsls_hmm_t *self, const tsk_id_t site, const allele
         allele = mutation_range_allele(ranges, num_ranges, preorder[u], ancestral_state);
         mismatch = state != TSLS_MISSING_DATA && allele != state;
         value = p_t * emission_probability(allele, state, mu, num_alleles);
-        value = TSK_MAX(value / max_L, self->likelihood_threshold);
+        value = tsls_hmm_normalise_viterbi(self, value, max_L);
         L[u].value = value;
         if (mismatch || value != old_value
             || tree[u].recombination_required != old_flag) {
@@ -1940,6 +1974,7 @@ tsls_hmm_process_site_forward(tsls_hmm_t *self, const tsk_id_t site,
 
     tsls_hmm_insert_mutation_likelihoods(self, site);
     tsls_hmm_compute_num_inheriting(self);
+    self->site_num_updated = (size_t) self->num_likelihood_nodes;
     total = *previous_total;
     if (total < 0) {
         total = tsls_hmm_total_likelihood(self);
@@ -2023,6 +2058,7 @@ tsls_hmm_process_site_backward(tsls_hmm_t *self, const tsk_id_t site,
         goto out;
     }
     tsls_hmm_compute_num_inheriting(self);
+    self->site_num_updated = (size_t) self->num_likelihood_nodes;
     tsls_hmm_set_allelic_state(self, site);
     for (j = 0; j < self->num_likelihood_nodes; j++) {
         u = L_nodes[j];
@@ -2063,6 +2099,10 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
     int handled;
 
     tsk_tree_position_init(&tp, self->tree_sequence, 0);
+    self->stats_num_sites = 0;
+    self->stats_total_values = 0;
+    self->stats_max_values = 0;
+    self->stats_total_updated = 0;
     for (site = start; site < end; site++) {
         ret = check_haplotype_state(self, site, haplotype[site]);
         if (ret != 0) {
@@ -2071,7 +2111,10 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
     }
     self->track_num_below = mode != MODE_VITERBI;
     first_site = direction > 0 ? start : end - 1;
-    ret = tsls_hmm_init_sweep(self, &tp, position[first_site], 1.0);
+    /* The forward algorithm starts from the uniform distribution over the
+     * nodes; the backward starts from 1, and Viterbi values are relative. */
+    ret = tsls_hmm_init_sweep(self, &tp, position[first_site],
+        mode == MODE_FORWARD ? 1.0 / tsls_hmm_get_n(self) : 1.0);
     if (ret != 0) {
         goto out;
     }
@@ -2137,6 +2180,11 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
         if (ret != 0) {
             goto out;
         }
+        self->stats_num_sites++;
+        self->stats_total_values += (size_t) self->num_likelihood_nodes;
+        self->stats_max_values
+            = TSK_MAX(self->stats_max_values, (size_t) self->num_likelihood_nodes);
+        self->stats_total_updated += self->site_num_updated;
         self->num_removed_nodes = 0;
         if (self->current_stamp == UINT32_MAX) {
             memset(self->stamp, 0, (self->num_nodes + 1) * sizeof(*self->stamp));
@@ -2405,6 +2453,24 @@ tsls_hmm_get_mean_num_distinct_values(tsls_hmm_t *self)
         return 0;
     }
     return (double) self->total_distinct_values / ((double) self->num_sites);
+}
+
+double
+tsls_hmm_get_mean_num_values(const tsls_hmm_t *self)
+{
+    if (self->stats_num_sites == 0) {
+        return 0;
+    }
+    return (double) self->stats_total_values / (double) self->stats_num_sites;
+}
+
+double
+tsls_hmm_get_mean_num_updated(const tsls_hmm_t *self)
+{
+    if (self->stats_num_sites == 0) {
+        return 0;
+    }
+    return (double) self->stats_total_updated / (double) self->stats_num_sites;
 }
 
 size_t
