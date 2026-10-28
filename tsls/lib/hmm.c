@@ -1359,38 +1359,55 @@ tsls_hmm_get_inherited_likelihood_and_flag(
     return value;
 }
 
-/* Returns the nearest proper ancestor of u that has a likelihood, or
- * NULL_NODE if u is a root. The answer is cached on the nodes without
- * likelihoods on the path, using the likelihood cache's stamp, so that
- * finding the ancestors of all the nodes in the likelihood list costs the
- * size of the union of their paths up to the nearest node with a
- * likelihood. These are much shorter than the paths up to a mutation or
- * root. The caches must be cleared before (they share the stamp with the
- * likelihood caches) and after, once the likelihood list changes. */
-static ALWAYS_INLINE tsk_id_t
-tsls_hmm_get_listed_ancestor(tsls_hmm_t *self, tsk_id_t u)
+/* Set the listed_ancestor of every node in the likelihood list to its
+ * nearest proper ancestor with a likelihood (NULL_NODE for a root). Each
+ * listed node is first marked, with the stamp of the likelihood caches and
+ * itself as its listed_ancestor, so that the walks up the tree only read
+ * the node records. The answers are cached on the nodes without
+ * likelihoods on the paths, so the cost is the size of the union of the
+ * paths up to the nearest nodes with likelihoods, which are much shorter
+ * than the paths up to a mutation or root. Clears the likelihood caches,
+ * which share the stamp, before; they must be cleared again once the
+ * likelihood list changes. */
+static void
+tsls_hmm_set_listed_ancestors(tsls_hmm_t *self)
 {
-    const tsls_likelihood_t *restrict L = self->likelihood;
     tsls_node_t *restrict tree = self->tree;
-    const uint32_t stamp = self->cache_stamp;
-    const tsk_id_t p = tree[u].parent;
-    tsk_id_t v, a;
+    const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
+    tsk_id_t *restrict ancestor = self->likelihood_nodes_tmp;
+    const int num_likelihood_nodes = self->num_likelihood_nodes;
+    uint32_t stamp;
+    tsk_id_t u, v, a;
+    int j;
 
-    if (p == NULL_NODE) {
-        return NULL_NODE;
+    tsls_hmm_clear_likelihood_caches(self);
+    stamp = self->cache_stamp;
+    for (j = 0; j < num_likelihood_nodes; j++) {
+        u = L_nodes[j];
+        tree[u].cache_stamp = stamp;
+        tree[u].listed_ancestor = u;
     }
-    v = p;
-    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(tree[v].cache_stamp != stamp)) {
-        v = tree[v].parent;
+    for (j = 0; j < num_likelihood_nodes; j++) {
+        u = L_nodes[j];
+        a = NULL_NODE;
+        if (tree[u].parent != NULL_NODE) {
+            v = tree[u].parent;
+            while (tree[v].cache_stamp != stamp) {
+                v = tree[v].parent;
+            }
+            a = tree[v].listed_ancestor;
+            v = tree[u].parent;
+            while (tree[v].cache_stamp != stamp) {
+                tree[v].listed_ancestor = a;
+                tree[v].cache_stamp = stamp;
+                v = tree[v].parent;
+            }
+        }
+        ancestor[j] = a;
     }
-    a = L[v].value >= 0 ? v : tree[v].listed_ancestor;
-    v = p;
-    while (likely(L[v].value == NULL_LIKELIHOOD) && likely(tree[v].cache_stamp != stamp)) {
-        tree[v].listed_ancestor = a;
-        tree[v].cache_stamp = stamp;
-        v = tree[v].parent;
+    for (j = 0; j < num_likelihood_nodes; j++) {
+        tree[L_nodes[j]].listed_ancestor = ancestor[j];
     }
-    return a;
 }
 
 /* Returns the allelic state of the node u with a likelihood, given that
@@ -1700,11 +1717,7 @@ tsls_hmm_process_site_viterbi(tsls_hmm_t *self, const tsk_id_t site,
     tsls_hmm_set_allelic_state(self, site);
     self->site_num_updated = (size_t) self->num_likelihood_nodes;
     /* Find the list's own tree, for the alleles and coalescing */
-    tsls_hmm_clear_likelihood_caches(self);
-    for (j = 0; j < self->num_likelihood_nodes; j++) {
-        u = L_nodes[j];
-        tree[u].listed_ancestor = tsls_hmm_get_listed_ancestor(self, u);
-    }
+    tsls_hmm_set_listed_ancestors(self);
     max_L = -1;
     max_L_node = NULL_NODE;
     for (j = 0; j < self->num_likelihood_nodes; j++) {
