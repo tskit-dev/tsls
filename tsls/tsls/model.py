@@ -20,7 +20,13 @@ node that matches:
 The Viterbi value of a node, normalised by the maximum, is the product of
 the odds along its best path divided by the largest such product at the
 site.
+
+Per-site recombination probabilities can be computed from a constant rate per
+unit of sequence length or a genetic map with recombination_probabilities,
+as tsinfer does for its recombination_rate parameter.
 """
+
+import pathlib
 
 import numpy as np
 
@@ -125,3 +131,58 @@ def lossless_threshold(recombination, num_nodes, *, tolerance=THRESHOLD_TOLERANC
     for rounding.
     """
     return float(np.min(switch_odds(recombination, num_nodes))) * (1 - tolerance)
+
+
+def read_genetic_map(path, positions):
+    """
+    Read a HapMap-format genetic map and return the genetic position (in
+    Morgans) of each of the specified physical positions.
+
+    The file has a single header line and whitespace-separated columns:
+    chromosome, position (bp), rate (cM/Mb) and cumulative map position (cM).
+    Only the position and map columns are used. Genetic positions are linearly
+    interpolated between map entries, with an implicit entry of 0 cM at
+    position 0. Beyond the last entry the recombination rate is zero. This
+    follows ``msprime.RateMap.read_hapmap``.
+
+    Copied from tsinfer.matching.read_genetic_map.
+    """
+    map_position, map_cm = np.loadtxt(
+        path, skiprows=1, usecols=(1, 3), unpack=True, ndmin=2
+    )
+    if len(map_position) == 0:
+        raise ValueError(f"Genetic map {path} is empty")
+    if np.any(np.diff(map_position) <= 0):
+        raise ValueError(f"Genetic map {path} positions are not strictly increasing")
+    if np.any(np.diff(map_cm) < 0):
+        raise ValueError(f"Genetic map {path} map positions (cM) decrease")
+    map_morgans = map_cm / 100
+    if map_position[0] > 0:
+        map_position = np.insert(map_position, 0, 0)
+        map_morgans = np.insert(map_morgans, 0, 0)
+    return np.interp(positions, map_position, map_morgans)
+
+
+def recombination_probabilities(recombination_rate, positions):
+    """
+    Return the probability of recombination between each site and the
+    previous one, given either a constant rate per unit of sequence length or
+    the path to a HapMap genetic map (see read_genetic_map). The genetic
+    distance d (Morgans) between adjacent sites is converted to the
+    probability of an odd number of crossovers using Haldane's map function,
+    (1 - exp(-2d)) / 2. The first site has probability 0.
+
+    The result is the per-site recombination probability r_j taken by
+    tsls.Hmm. Copied from tsinfer.matching.recombination_probabilities.
+    """
+    positions = np.asarray(positions, dtype=np.float64)
+    if isinstance(recombination_rate, (str, pathlib.Path)):
+        genetic_position = read_genetic_map(recombination_rate, positions)
+        distance = np.diff(genetic_position)
+    else:
+        if recombination_rate < 0:
+            raise ValueError("Recombination rate must be non-negative")
+        distance = np.diff(positions) * recombination_rate
+    probability = np.zeros(len(positions))
+    probability[1:] = (1 - np.exp(-2 * distance)) / 2
+    return probability
