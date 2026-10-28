@@ -23,7 +23,9 @@ same model as a tsinfer rho r with r / (r + (1 - r) / n) (see
 docs/likelihood_model.md and tsls.model.recombination_probability). We
 choose r as sc2ts does, so that k mismatches cost about the same as one
 recombination. The model dicts give rho and weight_by_n as tsinfer-hmm
-takes them.
+takes them. For tsinfer-hmm and tsls, rho can also be an array of per-site
+probabilities (tsls.model.recombination_probabilities), as tsinfer computes
+from a recombination rate or genetic map.
 
 The engines still differ in what they can copy from: tsinfer-hmm can copy
 any node, while tskit-hmm can only copy samples.
@@ -176,7 +178,10 @@ class AncestorMatcherEngine:
         self.rho = rho
         self.weight_by_n = weight_by_n
         self.mismatch_threshold = mismatch_threshold
-        self.recombination = np.full(ts.num_sites, rho)
+        # rho can be a per-site array, as from a recombination map
+        self.recombination = np.array(
+            np.broadcast_to(np.asarray(rho, dtype=float), (ts.num_sites,))
+        )
         self.mismatch = np.full(ts.num_sites, mu)
         self.alleles = alleles
         self.reference = self.make_reference(ts, alleles)
