@@ -144,7 +144,7 @@ def make_matcher(
     *,
     weight_by_n=True,
     likelihood_threshold=None,
-    pruning=None,
+    relative_prune_threshold=None,
     count_distinct=False,
     tree_sequence=None,
 ):
@@ -165,7 +165,7 @@ def make_matcher(
         np.full(m, rho),
         np.full(m, mu),
         likelihood_threshold=likelihood_threshold,
-        pruning=pruning,
+        relative_prune_threshold=relative_prune_threshold,
         count_distinct=count_distinct,
     )
 

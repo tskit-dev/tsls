@@ -196,8 +196,8 @@ The prune is applied as each value is normalised, in both the full and the
 sparse site updates. This is the same function of the value at every site
 with the same rates, which is what sparse sites rely on: a node unchanged
 at the previous site, and that matches at both, is unchanged. A pruned node
-gets a new value, and so is recomputed at the next site. So, unlike the
-experimental `pruning` option, `prune_threshold` keeps sparse sites.
+gets a new value, and so is recomputed at the next site. So, unlike
+`relative_prune_threshold`, `prune_threshold` keeps sparse sites.
 
 ## Later work
 

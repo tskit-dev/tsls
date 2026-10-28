@@ -237,8 +237,6 @@ def viterbi_strategies(r, mu, num_alleles, n, quick, per_site_r=False):
     for k in PRUNE_K[:2] if quick else PRUNE_K:
         t = tsls.model.path_threshold(k, mu, num_alleles)
         out.append(("prune_k", k, {"prune_threshold": t}, t))
-    for n_top in [10, 100]:
-        out.append(("top_n", n_top, {"pruning": ("top_n", n_top)}, np.nan))
     return out
 
 
@@ -257,16 +255,18 @@ def fb_strategies(r, n, quick, per_site_r=False):
     if per_site_r:
         q_med = median_switch_odds(r, n)
         out = [("exact", np.nan, {}), ("floor", 1e-8, {"likelihood_threshold": 1e-8})]
-        out += [("relative_q", c, {"pruning": ("relative", c * q)}) for c in [0.01, 1]]
         out += [
-            ("relative_qmed", c, {"pruning": ("relative", c * q_med)}) for c in [0.01, 1]
+            ("relative_q", c, {"relative_prune_threshold": c * q}) for c in [0.01, 1]
+        ]
+        out += [
+            ("relative_qmed", c, {"relative_prune_threshold": c * q_med})
+            for c in [0.01, 1]
         ]
         return out
     out = [("exact", np.nan, {})]
     out += [("floor", t, {"likelihood_threshold": t}) for t in floors]
-    out += [("relative", t, {"pruning": ("relative", t)}) for t in floors]
-    out += [("relative_q", c, {"pruning": ("relative", c * q)}) for c in [0.01, 1]]
-    out += [("top_n", k, {"pruning": ("top_n", k)}) for k in [10, 100, 1000]]
+    out += [("relative", t, {"relative_prune_threshold": t}) for t in floors]
+    out += [("relative_q", c, {"relative_prune_threshold": c * q}) for c in [0.01, 1]]
     return out
 
 

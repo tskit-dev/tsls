@@ -65,12 +65,12 @@ q = 2.33e-8. We set mu so that k mismatches cost the same as one switch
 | Viterbi | `floor` t | raises values below t to t (`likelihood_threshold`) | none if t > q |
 | | `lossless_prune` | drops nodes below q (`tsls.model.lossless_threshold`) | changes no later values |
 | | `prune_k` k | drops nodes below `e^k` (`tsls.model.path_threshold`) | optimal if the optimal path has ≤ k mismatches; certifies a path with odds ≥ t |
-| | `top_n` n | keeps the n largest values | none; turns off sparse sites |
+| | `top_n` n | keeps the n largest values (since removed) | none; turns off sparse sites |
 | | `escalation` | `prune_k` at k = 0, 1, 2, 4 until the path is certified, then exact | always optimal |
 | Forward/backward | `floor` t | raises values below t to t | none |
 | | `relative` f | drops nodes below f × max | none |
 | | `relative_q` c | drops nodes below c·q × max, below the mass recombination alone gives a node | none proven; near-exact here |
-| | `top_n` n | keeps the n largest values | none |
+| | `top_n` n | keeps the n largest values (since removed) | none |
 
 ### Measures
 
@@ -276,7 +276,7 @@ Findings:
   - The k-mismatch certificate doesn't suit sample matching, where paths
     have hundreds of switches.
 - **Forward-backward:**
-  - Use `pruning=("relative", c * q)` with c ≤ 1. It is accurate to about
+  - Use `relative_prune_threshold=c * q` with c ≤ 1. It is accurate to about
     1e-3 in the log likelihood here, and saves 10–25% with mismatches.
   - Larger thresholds trade large, unbounded errors for speed.
   - Memory, not time, is the limit for forward-backward on tsinfer data.
@@ -389,6 +389,8 @@ On the constant-rate and map results together:
   harmful, and in forward-backward they add mass. `likelihood_threshold`
   stays only as an underflow guard.
 - **`top_n`**: slow (it turns off sparse sites), inexact, no guarantee.
+  Removed from the engine; relative pruning is now
+  `Hmm(relative_prune_threshold=f)`.
 - **`relative` with a fixed fraction**: harmful above q, and can't follow
   a map. Thresholds relative to q replace it.
 - **Escalation**: 2–5× exact everywhere, and never certifies sample paths.
@@ -432,9 +434,9 @@ reached again by recombination.
 - **`floor`** is the existing `likelihood_threshold`: any value below `t` is
   set to `t`.
 - **`relative`** prunes nodes with a value below `f` times the maximum. Use
-  `pruning=("relative", f)` (experimental option).
+  `relative_prune_threshold=f`.
 - **`top_n`** prunes all but the `n` nodes with the largest values. Nodes tied
-  with the n-th value are kept. Use `pruning=("top_n", n)` (experimental option).
+  with the n-th value are kept. (Since removed from the engine.)
 - **`lossless_floor`** is `floor` at `t* = (ρ/n) / (1 − ρ + ρ/n)`. In Viterbi,
   any node below `t*` loses to recombination at the next site, so this floor
   changes no Viterbi likelihoods. With `weight_by_n=False`, as sc2ts uses,

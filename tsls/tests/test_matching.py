@@ -698,29 +698,29 @@ class TestPruning:
         return am, path, match, fm.decode(), bm.decode()
 
     @pytest.mark.parametrize("name", list(EXAMPLES))
-    @pytest.mark.parametrize("pruning", [("relative", 0), ("top_n", 1000)])
-    def test_weak_pruning_is_exact(self, name, pruning):
+    def test_weak_pruning_is_exact(self, name):
         ts = EXAMPLES[name]()
         A, present, _ = dense.node_states(ts, ALLELES)
         for h in queries(ts, A, present):
             # Pruning processes every Viterbi site in full, which may choose
             # another path among equally likely ones than sparse sites do.
             _, path1, match1, F1, B1 = self.run_all(ts, h, sparse=False)
-            _, path2, match2, F2, B2 = self.run_all(ts, h, pruning=pruning)
+            _, path2, match2, F2, B2 = self.run_all(
+                ts, h, relative_prune_threshold=1e-300
+            )
             for x, y in zip(path1, path2):
                 np.testing.assert_array_equal(x, y)
             np.testing.assert_array_equal(match1, match2)
             np.testing.assert_array_equal(F1, F2)
             np.testing.assert_array_equal(B1, B2)
 
-    @pytest.mark.parametrize("pruning", [("relative", 0.5), ("top_n", 1)])
-    def test_strong_pruning_reduces_traceback(self, pruning):
+    def test_strong_pruning_reduces_traceback(self):
         ts = two_tree_ts()
         A, present, _ = dense.node_states(ts, ALLELES)
         h = queries(ts, A, present)[-2]
         am1, *_ = self.run_all(ts, h)
         size1 = am1.mean_traceback_size
-        am2, *_ = self.run_all(ts, h, pruning=pruning)
+        am2, *_ = self.run_all(ts, h, relative_prune_threshold=0.5)
         assert am2.mean_traceback_size < size1
 
     @pytest.mark.parametrize("name", list(EXAMPLES))
@@ -762,20 +762,38 @@ class TestPruning:
         am, *_ = self.run_all(ts, h)
         assert am.mean_num_distinct_values == 0
 
-    @pytest.mark.parametrize(
-        "pruning", [("relative", 2), ("relative", -1), ("top_n", 0), ("top_n", 0.5)]
-    )
-    def test_bad_pruning(self, pruning):
+    @pytest.mark.parametrize("threshold", [2, -1, np.nan])
+    def test_bad_relative_prune_threshold(self, threshold):
         ts = single_tree_ts()
         m = ts.num_sites
         with pytest.raises(tsls.LibraryError, match="pruning"):
-            tsls.Hmm(ts, np.zeros(m), np.zeros(m), alleles=ALLELES, pruning=pruning)
+            tsls.Hmm(
+                ts,
+                np.zeros(m),
+                np.zeros(m),
+                alleles=ALLELES,
+                relative_prune_threshold=threshold,
+            )
 
-    def test_unknown_pruning_mode(self):
+    def test_pruning_removed(self):
         ts = single_tree_ts()
         m = ts.num_sites
-        with pytest.raises(ValueError, match="Unknown pruning"):
-            tsls.Hmm(ts, np.zeros(m), np.zeros(m), pruning=("x", 1))
+        with pytest.raises(TypeError, match="pruning"):
+            tsls.Hmm(ts, np.zeros(m), np.zeros(m), pruning=("top_n", 1))
+
+    def test_zero_relative_prune_threshold_keeps_sparse(self):
+        ts = wright_fisher_ts(0, num_trees_hint=0)
+        m = ts.num_sites
+        h = np.zeros(m, dtype=np.int8)
+        am = tsls.Hmm(
+            ts,
+            np.full(m, 0.02),
+            np.full(m, 0.01),
+            alleles=ALLELES,
+            relative_prune_threshold=0,
+        )
+        am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
+        assert am.num_sparse_sites > 0
 
 
 class TestViterbiMatrix:
@@ -1040,7 +1058,11 @@ class TestSparse:
         am.viterbi_matrix(h)
         assert am.num_sparse_sites == 0
         am = tsls.Hmm(
-            ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES, pruning=("top_n", 5)
+            ts,
+            np.full(m, 0.02),
+            np.full(m, 0.01),
+            alleles=ALLELES,
+            relative_prune_threshold=1e-3,
         )
         am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
         assert am.num_sparse_sites == 0
