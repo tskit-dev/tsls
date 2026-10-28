@@ -183,17 +183,19 @@ typedef struct {
     double prune_threshold;
     double *recombination_rate;
     double *mismatch_rate;
-    /* The per-node state, with the parent links of the quintuply linked
-     * tree, which are completed by the arrays below */
+    /* The per-node state, including the tree's parent links */
     tsls_node_t *tree;
     tsls_likelihood_t *likelihood;
     /* Likelihood caches are valid on nodes whose cache_stamp equals this;
      * incrementing it clears them all */
     uint32_t cache_stamp;
-    tsk_id_t *left_child;
-    tsk_id_t *right_child;
-    tsk_id_t *left_sib;
-    tsk_id_t *right_sib;
+    /* The number of children of each node in the current tree */
+    int32_t *num_children;
+    /* The children of each node, as ranges child_offset[u] to
+     * child_offset[u + 1] of children, built when a tree is numbered (see
+     * tsls_hmm_number_tree) */
+    int32_t *child_offset;
+    tsk_id_t *children;
     /* The number of nodes in the subtree below each node, including itself.
      * Only maintained for the forward and backward algorithms. */
     int64_t *num_below;

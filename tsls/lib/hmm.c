@@ -133,47 +133,23 @@ tsls_large_free(void *p, size_t size)
 #define MODE_FORWARD  1
 #define MODE_BACKWARD 2
 
+/* The tree is kept as parent links and numbers of children: the walks only
+ * go up the tree, and a node is in the tree if it has a parent or a child.
+ * Children are only listed when a tree is numbered (tsls_hmm_number_tree). */
 static inline void
-remove_edge(tsk_id_t p, tsk_id_t c, tsls_node_t *restrict tree,
-    tsk_id_t *restrict left_child, tsk_id_t *restrict right_child,
-    tsk_id_t *restrict left_sib, tsk_id_t *restrict right_sib)
+remove_edge(
+    tsk_id_t p, tsk_id_t c, tsls_node_t *restrict tree, int32_t *restrict num_children)
 {
-    const tsk_id_t lsib = left_sib[c];
-    const tsk_id_t rsib = right_sib[c];
-
-    if (lsib == NULL_NODE) {
-        left_child[p] = rsib;
-    } else {
-        right_sib[lsib] = rsib;
-    }
-    if (rsib == NULL_NODE) {
-        right_child[p] = lsib;
-    } else {
-        left_sib[rsib] = lsib;
-    }
     tree[c].parent = NULL_NODE;
-    left_sib[c] = NULL_NODE;
-    right_sib[c] = NULL_NODE;
+    num_children[p]--;
 }
 
 static inline void
-insert_edge(tsk_id_t p, tsk_id_t c, tsls_node_t *restrict tree,
-    tsk_id_t *restrict left_child, tsk_id_t *restrict right_child,
-    tsk_id_t *restrict left_sib, tsk_id_t *restrict right_sib)
+insert_edge(
+    tsk_id_t p, tsk_id_t c, tsls_node_t *restrict tree, int32_t *restrict num_children)
 {
-    const tsk_id_t u = right_child[p];
-
     tree[c].parent = p;
-    if (u == NULL_NODE) {
-        left_child[p] = c;
-        left_sib[c] = NULL_NODE;
-        right_sib[c] = NULL_NODE;
-    } else {
-        right_sib[u] = c;
-        left_sib[c] = u;
-        right_sib[c] = NULL_NODE;
-    }
-    right_child[p] = c;
+    num_children[p]++;
 }
 
 /* During the forward and backward sweeps, the allelic state of every node
@@ -587,7 +563,7 @@ tsls_index_free(tsls_index_t *self)
 static inline bool
 tsls_hmm_in_tree(const tsls_hmm_t *self, tsk_id_t u)
 {
-    return self->tree[u].parent != NULL_NODE || self->left_child[u] != NULL_NODE;
+    return self->tree[u].parent != NULL_NODE || self->num_children[u] > 0;
 }
 
 static void
@@ -636,11 +612,10 @@ tsls_hmm_print_state(tsls_hmm_t *self, FILE *out)
             (int) self->index->num_alleles[j], (int) self->index->ancestral_state[j]);
     }
     fprintf(out, "tree = \n");
-    fprintf(out, "id\tparent\tlchild\trchild\tlsib\trsib\tlikelihood\n");
+    fprintf(out, "id\tparent\tnum_children\tlikelihood\n");
     for (j = 0; j < (int) self->num_nodes; j++) {
-        fprintf(out, "%d\t%d\t%d\t%d\t%d\t%d\t%f\n", (int) j, self->tree[j].parent,
-            self->left_child[j], self->right_child[j], self->left_sib[j],
-            self->right_sib[j], self->likelihood[j].value);
+        fprintf(out, "%d\t%d\t%d\t%f\n", (int) j, self->tree[j].parent,
+            self->num_children[j], self->likelihood[j].value);
     }
     fprintf(out, "likelihood nodes\n");
     for (j = 0; j < self->num_likelihood_nodes; j++) {
@@ -686,10 +661,9 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
 
     self->tree = tsls_large_alloc((N + 1) * sizeof(*self->tree));
     self->likelihood = tsls_large_alloc((N + 1) * sizeof(*self->likelihood));
-    self->left_child = tsls_large_alloc((N + 1) * sizeof(*self->left_child));
-    self->right_child = tsls_large_alloc((N + 1) * sizeof(*self->right_child));
-    self->left_sib = tsls_large_alloc((N + 1) * sizeof(*self->left_sib));
-    self->right_sib = tsls_large_alloc((N + 1) * sizeof(*self->right_sib));
+    self->num_children = tsls_large_alloc((N + 1) * sizeof(*self->num_children));
+    self->child_offset = tsls_large_alloc((N + 1) * sizeof(*self->child_offset));
+    self->children = tsls_large_alloc((N + 1) * sizeof(*self->children));
     self->num_below = tsls_large_alloc((N + 1) * sizeof(*self->num_below));
     self->num_inheriting = tsls_large_alloc((N + 1) * sizeof(*self->num_inheriting));
     self->likelihood_nodes = tsls_large_alloc((N + 1) * sizeof(*self->likelihood_nodes));
@@ -709,8 +683,8 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
         || self->mismatch_rate == NULL || self->traceback == NULL
         || self->max_likelihood_node == NULL || self->tree == NULL
         || self->likelihood == NULL
-        || self->left_child == NULL || self->right_child == NULL
-        || self->left_sib == NULL || self->right_sib == NULL || self->num_below == NULL
+        || self->num_children == NULL || self->child_offset == NULL
+        || self->children == NULL || self->num_below == NULL
         || self->num_inheriting == NULL || self->likelihood_nodes == NULL
         || self->likelihood_nodes_tmp == NULL || self->values_tmp == NULL
         || self->traceback_flags_tmp == NULL || self->removed_nodes == NULL
@@ -750,10 +724,9 @@ tsls_hmm_free(tsls_hmm_t *self)
     tsi_safe_free(self->mismatch_rate);
     tsls_large_free_array(self->tree, self->num_nodes);
     tsls_large_free_array(self->likelihood, self->num_nodes);
-    tsls_large_free_array(self->left_child, self->num_nodes);
-    tsls_large_free_array(self->right_child, self->num_nodes);
-    tsls_large_free_array(self->left_sib, self->num_nodes);
-    tsls_large_free_array(self->right_sib, self->num_nodes);
+    tsls_large_free_array(self->num_children, self->num_nodes);
+    tsls_large_free_array(self->child_offset, self->num_nodes);
+    tsls_large_free_array(self->children, self->num_nodes);
     tsls_large_free_array(self->num_below, self->num_nodes);
     tsls_large_free_array(self->num_inheriting, self->num_nodes);
     tsls_large_free_array(self->likelihood_nodes, self->num_nodes);
@@ -1043,8 +1016,7 @@ tsls_hmm_remove_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c,
     if (update_likelihoods && L[c].value == NULL_LIKELIHOOD) {
         tsls_hmm_add_likelihood(self, c, tsls_hmm_get_inherited_likelihood(self, p));
     }
-    remove_edge(p, c, self->tree, self->left_child, self->right_child,
-        self->left_sib, self->right_sib);
+    remove_edge(p, c, self->tree, self->num_children);
     /* c is now a root, and so has a likelihood, which walks over the
      * cache use in preference to any cached value */
     self->tree[c].allelic_state = ROOT_ALLELE;
@@ -1081,8 +1053,7 @@ tsls_hmm_insert_edge(tsls_hmm_t *self, tsk_id_t p, tsk_id_t c, bool update_likel
         /* Otherwise the child was a root and keeps its likelihood */
         assert(L[c].value >= 0);
     }
-    insert_edge(p, c, self->tree, self->left_child, self->right_child,
-        self->left_sib, self->right_sib);
+    insert_edge(p, c, self->tree, self->num_children);
     self->tree[c].allelic_state = TSK_NULL;
     if (self->track_num_below) {
         tsls_hmm_update_num_below(self, p, self->num_below[c]);
@@ -1141,10 +1112,7 @@ tsls_hmm_init_sweep(
     tsk_id_t u, j;
     size_t k;
 
-    memset(self->left_child, 0xff, N * sizeof(*self->left_child));
-    memset(self->right_child, 0xff, N * sizeof(*self->right_child));
-    memset(self->left_sib, 0xff, N * sizeof(*self->left_sib));
-    memset(self->right_sib, 0xff, N * sizeof(*self->right_sib));
+    memset(self->num_children, 0, N * sizeof(*self->num_children));
     for (k = 0; k < N; k++) {
         /* Every node starts as a root. The likelihoods are set below. */
         self->tree[k].cache_stamp = 0;
@@ -1174,7 +1142,7 @@ tsls_hmm_init_sweep(
     for (u = 0; u < (tsk_id_t) N; u++) {
         if (self->tree[u].parent != NULL_NODE) {
             self->likelihood[u].value = NULL_LIKELIHOOD;
-        } else if (self->left_child[u] != NULL_NODE) {
+        } else if (self->num_children[u] > 0) {
             tsls_hmm_add_likelihood(self, u, initial_value);
         } else {
             self->likelihood[u].value = NOT_IN_TREE;
@@ -1191,48 +1159,63 @@ tsls_hmm_number_tree(tsls_hmm_t *self)
 {
     const tsk_id_t N = (tsk_id_t) self->num_nodes;
     const tsls_node_t *restrict tree = self->tree;
-    const tsk_id_t *restrict left_child = self->left_child;
-    const tsk_id_t *restrict right_sib = self->right_sib;
+    const int32_t *restrict num_children = self->num_children;
+    int32_t *restrict child_offset = self->child_offset;
+    tsk_id_t *restrict children = self->children;
     const tsls_likelihood_t *restrict L = self->likelihood;
     int32_t *restrict preorder = self->preorder;
     int32_t *restrict subtree_end = self->subtree_end;
     tsk_id_t *restrict L_nodes = self->likelihood_nodes;
     tsk_id_t *restrict order = self->likelihood_nodes_tmp;
-    tsk_id_t root, u;
-    int32_t k, j;
+    /* The position in each node's children of the next child to visit */
+    int32_t *restrict next_child = subtree_end;
+    tsk_id_t root, u, p;
+    int32_t k, j, total;
     int n;
-    bool done;
 
+    /* List the children of each node, in order of node ID */
+    total = 0;
     for (u = 0; u < N; u++) {
+        child_offset[u] = total;
+        next_child[u] = total;
+        total += num_children[u];
+    }
+    child_offset[N] = total;
+    for (u = 0; u < N; u++) {
+        p = tree[u].parent;
+        if (p != NULL_NODE) {
+            children[next_child[p]] = u;
+            next_child[p]++;
+        }
         preorder[u] = -1;
+    }
+    for (u = 0; u < N; u++) {
+        next_child[u] = child_offset[u];
     }
     k = 0;
     for (root = 0; root < N; root++) {
-        if (tree[root].parent != NULL_NODE || left_child[root] == NULL_NODE) {
+        if (tree[root].parent != NULL_NODE || num_children[root] == 0) {
             continue;
         }
+        preorder[root] = k;
+        order[k] = root;
+        k++;
         u = root;
-        done = false;
-        while (!done) {
-            preorder[u] = k;
-            order[k] = u;
-            k++;
-            if (left_child[u] != NULL_NODE) {
-                u = left_child[u];
+        while (true) {
+            if (next_child[u] < child_offset[u + 1]) {
+                /* Visit u's next child */
+                u = children[next_child[u]++];
+                preorder[u] = k;
+                order[k] = u;
+                k++;
             } else {
-                /* Leave u, and every ancestor whose last child we've left */
-                while (true) {
-                    subtree_end[u] = k;
-                    if (u == root) {
-                        done = true;
-                        break;
-                    }
-                    if (right_sib[u] != NULL_NODE) {
-                        u = right_sib[u];
-                        break;
-                    }
-                    u = tree[u].parent;
+                /* Leave u, whose subtree has been visited (this overwrites
+                 * u's next_child, which is no longer needed) */
+                subtree_end[u] = k;
+                if (u == root) {
+                    break;
                 }
+                u = tree[u].parent;
             }
         }
     }
