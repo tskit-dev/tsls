@@ -745,3 +745,111 @@ time in proportion to all 3.4M nodes, so most trees aren't numbered.
 Numbering 16 times more eagerly made more sites sparse (6,490 and 9,780
 for queries 11 and 22) but was slower (35 and 40 s), so numbering whole
 trees is the limit at this scale.
+
+## Walk caches: sample matching under a recombination map (October 2026)
+
+Under the HapMap II chr20 map, Viterbi on a chr20p sample took about
+4.1 s against 2.2 s with tsinfer's constant r, because values from
+different sites' switch odds rarely coalesce, so the likelihood list is
+about 8 times longer (`experiments/coarsening`). This round assessed
+algorithmic strategies, with sample matching under the map as the main
+target, and stopped when every remaining idea's estimated gain was under
+10%. Each step's commit records its measurements.
+
+### Measuring
+
+- `profile_samples.py` runs tsls on chr20p samples under a map or
+  constant r, printing times and a hash of each path.
+- `ab.py` compares builds of the extension (each a directory holding
+  `_tsls*.so`, put first on `PYTHONPATH`): each round runs every build in
+  its own process, pinned to one core, in turn, keeping the best time per
+  query over the rounds, and checks that the paths are identical.
+- Where the time goes was found with `sudo perf record` and
+  `perf annotate -l` on `tsls_hmm_find_path_matrix`, into which the site
+  update, coalescing and walks are all inlined, so source lines rather
+  than functions give the split. Step counters (walk lengths, edges per
+  site, how often caches could survive) were added temporarily and not
+  committed.
+
+### Where the time went
+
+At the start, the time was in walks up the tree, not in the values:
+
+| | map | constant r |
+|---|---|---|
+| allele walks up to a mutation or root, and clearing their marks | ~30% | ~27% |
+| coalescing walks to the inherited value, and cache writes | ~24% | ~22% |
+| walks resetting the caches | ~14% | ~15% |
+| arithmetic on the values | <1% | <1% |
+
+(Shares of `tsls_hmm_find_path_matrix`, which was about 80% of the run
+under the map and 63% under constant r; `tsls_hmm_update_tree` was most
+of the rest.) There were about 7.2 edges out and 7.2 in per site.
+
+### Changes
+
+| commit | change | map | constant r |
+|---|---|---|---|
+| `009f587` | clear the caches with a stamp, not reset walks | 0.93 | 0.98 |
+| `a1d957f` | get alleles, and coalesce, through each listed node's nearest listed ancestor | 0.78 | 0.86 |
+| `f00bcc0` | mark listed nodes, so walks read only node records | 0.86 | 0.92 |
+| `39fd01e` | keep the tree as parent links and child counts | 0.96 | 0.93 |
+| `7914bc2` | keep the walk caches across sites | 0.72 | 0.70 |
+
+Ratios are paired wall times over the previous build (6 samples, best of
+3). The two main ideas:
+
+- **The list's own tree.** Every node with a mutation at a site is in
+  the likelihood list, so a listed node's allele is that of its nearest
+  listed ancestor. One walk per listed node, to its nearest listed
+  ancestor, serves both the alleles and coalescing, and these walks are
+  much shorter than walks to a mutation or root.
+- **Persistent walk caches.** Each walk caches its answer, a node ID, on
+  the unlisted nodes it passes. The answer stays right until a node on a
+  cached path gets a likelihood or a new parent, which happened at 24% of
+  sites under the map and 14% under constant r. A node that loses its
+  likelihood becomes a cached node pointing to its old listed ancestor.
+  `tsls_hmm_check_state` checks that every cached walk leads to the
+  nearest listed ancestor.
+
+Overall, against the build before these changes, with identical paths:
+
+| workload | time |
+|---|---|
+| samples, map, mu = 1e-20 | 0.45-0.47 |
+| samples, map, mu = 1e-8 | 0.46 |
+| samples, constant r | 0.50-0.52 |
+
+`paired.py` (tsls over tsinfer-hmm; the path classes are unchanged):
+
+| workload | before | after |
+|---|---|---|
+| ancestors, group 84 | 0.773 | 0.674 |
+| ancestors, group 1485 | 0.714 | 0.528 |
+| sc2ts 100k, k = 1 | 0.020 | 0.018 |
+| sc2ts 100k, exact | 0.013 | 0.012 |
+
+A sample now takes about 2.0-2.3 s under the map and 0.8-0.9 s under
+constant r.
+
+### Dead ends and remaining ideas
+
+- **Reusing listed nodes' own ancestors between sites** (stamped, and
+  recomputed when stale): 1.00-1.02. Checking a stored ancestor costs a
+  record load, as the one-step walk it replaces does.
+- **Batching queries** in one sweep: only the tree position stepping and
+  the structural part of the edge updates are shared (about 7% of the run
+  after the changes above, and at most about 15% before its own
+  overheads), since each query's list, walks and caches are its own.
+  Not pursued.
+- **Remaining profile** (map, shares of the run): walks to listed
+  ancestors ~22%, tree updates ~13%, tree position stepping ~7%, the
+  site update's arithmetic ~7%, the traceback's walk up from the path
+  node to find the matched allele ~6%, storing the traceback ~5%, the
+  allele walk over the list ~4%, inserting mutation nodes ~4%. The
+  candidates each have a ceiling under 10%: precomputing tree transitions
+  in the index (~5-7%), bounding the traceback's allele walk by the
+  mutation's time (exact, since parents are older than children; ~6%),
+  and fusing traceback storage into the site update (~5%).
+- Approximations were not needed; earlier thresholding and coarsening
+  work found them costly in accuracy for little time.
