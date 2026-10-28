@@ -169,10 +169,6 @@ typedef struct {
      * the maximum are given the value likelihood_threshold, in all three
      * algorithms (0: off; see tsls_hmm_set_relative_prune_threshold) */
     double relative_prune_threshold;
-    /* Experimental: in Viterbi, normalised values are rounded to the nearest
-     * exp(-k * log_value_step) for integer k (0: off; see
-     * tsls_hmm_set_log_value_step) */
-    double log_value_step;
     /* In Viterbi, nodes with normalised values below this are given the
      * value likelihood_threshold (see tsls_hmm_set_prune_threshold) */
     double prune_threshold;
@@ -259,7 +255,6 @@ int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     const double *recombination_rate, const double *mismatch_rate,
     double likelihood_threshold, int flags);
 int tsls_hmm_set_relative_prune_threshold(tsls_hmm_t *self, double threshold);
-int tsls_hmm_set_log_value_step(tsls_hmm_t *self, double step);
 int tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold);
 int tsls_hmm_free(tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_values(const tsls_hmm_t *self);
