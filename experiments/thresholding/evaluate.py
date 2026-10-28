@@ -20,7 +20,15 @@ Workloads (from benchmarking/data):
   with tsinfer's rho = 0.01 and mu = 1e-20;
 - tgp_samples: sample matching for chr20p, with rho = 0.01 and mu such that
   k mismatches cost the same as one switch, for k = 1, 2, 4, and with
-  tsinfer's mu = 1e-20.
+  tsinfer's mu = 1e-20;
+- tgp_samples_map: sample matching for chr20p with per-site recombination
+  probabilities from the HapMap II GRCh38 chr20 map (made by
+  benchmarking/genetic_map.py), as tsinfer's recombination_rate gives, and
+  mu = 1e-20, 1e-8 and 1e-4. Its grid has only the strategies kept after
+  the constant-rate runs, plus thresholds at the median switch odds.
+
+--workloads selects a subset of the workloads, and --results the
+directory the results go to.
 
 Each task (one query) runs in a worker process with its address space
 limited to MEMORY_LIMIT, and results go to results/viterbi.csv and
@@ -29,6 +37,7 @@ results/forward_backward.csv. Then summary.md is written.
     uv run python evaluate.py -t 2           # about an hour
     uv run python evaluate.py --quick -t 2   # a few minutes
     uv run python evaluate.py --analyse-only
+    uv run python evaluate.py --workloads tgp_samples_map --results results/map -t 2
 """
 
 import argparse
@@ -64,6 +73,10 @@ MISSING = -1
 SC2TS_ALLELES = ("A", "C", "G", "T")
 TGP_RHO = 0.01
 SAMPLE_MISMATCH_K = [1, 2, 4]
+GENETIC_MAP = DATA / "genetic_maps" / "chr20_HapMapII_GRCh38.txt"
+MAP_MISMATCH = [("1e-20", 1e-20), ("1e-8", 1e-8), ("1e-4", 1e-4)]
+NUM_MAP_SAMPLES = 4
+WORKLOADS = ["sc2ts", "tgp_ancestors", "tgp_samples", "tgp_samples_map"]
 
 FLOORS = [1e-8, 1e-4, 1e-2]
 PRUNE_K = [0, 1, 2, 3]
@@ -173,7 +186,17 @@ def model_rates(name, ts, mu_parameter):
         mu, q = sc2ts_mismatch_and_odds()
         r = tsls.model.recombination_probability(q, ts.num_nodes)
         return np.full(m, r), np.full(m, mu)
+    if name == "tgp_samples_map":
+        r = tsls.model.recombination_probabilities(GENETIC_MAP, ts.sites_position)
+        return r, np.full(m, mu_parameter)
     return np.full(m, TGP_RHO), np.full(m, mu_parameter)
+
+
+def median_switch_odds(r, n):
+    """
+    The median switch odds over all but the first site (which has r = 0).
+    """
+    return float(np.median(tsls.model.switch_odds(r[1:], n)))
 
 
 # ---------------------------------------------------------------------------
@@ -181,12 +204,30 @@ def model_rates(name, ts, mu_parameter):
 # ---------------------------------------------------------------------------
 
 
-def viterbi_strategies(r, mu, num_alleles, n, quick):
+def viterbi_strategies(r, mu, num_alleles, n, quick, per_site_r=False):
     """
     Return the list of (strategy, parameter, Hmm kwargs, certificate
     threshold) tuples for Viterbi. A path with odds of at least the
     certificate threshold is claimed optimal (NaN: no claim).
+
+    With per-site r (a recombination map), the grid is the strategies kept
+    after the constant-rate runs, floor 1e-8 (below q with tsinfer's
+    constant r, but above most of the map's q), and prune_qmed: pruning at
+    c times the median switch odds, which no constant-rate threshold
+    corresponds to and which has no guarantee.
     """
+    if per_site_r:
+        out = [("exact", np.nan, {}, np.nan)]
+        out.append(("floor", 1e-8, {"likelihood_threshold": 1e-8}, 1e-8))
+        t = tsls.model.lossless_threshold(r[1:], n)
+        out.append(("lossless_prune", t, {"prune_threshold": t}, np.nan))
+        for k in PRUNE_K:
+            t = tsls.model.path_threshold(k, mu, num_alleles)
+            out.append(("prune_k", k, {"prune_threshold": t}, t))
+        q = median_switch_odds(r, n)
+        for c in [0.01, 1]:
+            out.append(("prune_qmed", c, {"prune_threshold": c * q}, np.nan))
+        return out
     floors = FLOORS[1:] if quick else FLOORS
     out = [("exact", np.nan, {}, np.nan)]
     for t in floors:
@@ -201,15 +242,26 @@ def viterbi_strategies(r, mu, num_alleles, n, quick):
     return out
 
 
-def fb_strategies(r, n, quick):
+def fb_strategies(r, n, quick, per_site_r=False):
     """
     Return the list of (strategy, parameter, Hmm kwargs) tuples for forward
     and backward. relative_q drops nodes below c q times the maximum, where
     q is the smallest switch odds: such a node has less mass than
     recombination alone gives every node (as a fraction of the maximum).
+    With per-site r, the first site (r = 0) is left out of the minimum, and
+    the grid is the kept strategies, floor 1e-8, and relative_qmed: relative
+    pruning at c times the median switch odds.
     """
     floors = FLOORS[1:] if quick else FLOORS
-    q = float(np.min(tsls.model.switch_odds(r, n)))
+    q = float(np.min(tsls.model.switch_odds(r[1:], n)))
+    if per_site_r:
+        q_med = median_switch_odds(r, n)
+        out = [("exact", np.nan, {}), ("floor", 1e-8, {"likelihood_threshold": 1e-8})]
+        out += [("relative_q", c, {"pruning": ("relative", c * q)}) for c in [0.01, 1]]
+        out += [
+            ("relative_qmed", c, {"pruning": ("relative", c * q_med)}) for c in [0.01, 1]
+        ]
+        return out
     out = [("exact", np.nan, {})]
     out += [("floor", t, {"likelihood_threshold": t}) for t in floors]
     out += [("relative", t, {"pruning": ("relative", t)}) for t in floors]
@@ -260,7 +312,19 @@ def path_by_site(left, parent, positions, start, end):
     return parent[order][segment]
 
 
-def viterbi_rows(base, tree_sequence, ts, r, mu, num_alleles, h, start, end, quick):
+def viterbi_rows(
+    base,
+    tree_sequence,
+    ts,
+    r,
+    mu,
+    num_alleles,
+    h,
+    start,
+    end,
+    quick,
+    per_site_r=False,
+):
     n = ts.num_nodes
     positions = ts.sites_position
     log_q = np.log(tsls.model.switch_odds(r, n))
@@ -268,7 +332,7 @@ def viterbi_rows(base, tree_sequence, ts, r, mu, num_alleles, h, start, end, qui
     rows = []
     exact = None
     for strategy, parameter, kwargs, t_cert in viterbi_strategies(
-        r, mu, num_alleles, n, quick
+        r, mu, num_alleles, n, quick, per_site_r
     ):
         left, parent, matched, stats = run_viterbi(
             tree_sequence, r, mu, kwargs, h, start, end
@@ -296,6 +360,9 @@ def viterbi_rows(base, tree_sequence, ts, r, mu, num_alleles, h, start, end, qui
                 "values_ratio": stats["mean_values"] / exact[2]["mean_values"],
             }
         )
+    if per_site_r:
+        # Escalation is dropped from the recombination map grid
+        return rows, exact[1]
     # Escalation: prune at k = 0, 1, ... until the path is certified, and
     # run exact if none is.
     total = 0
@@ -408,12 +475,16 @@ def compare_posterior(p, q):
     """
     if p is None:
         return 1.0, float(np.max(q)), False
-    return 0.5 * float(np.sum(np.abs(p - q))), float(np.max(np.abs(p - q))), bool(
-        np.argmax(p) == np.argmax(q)
+    return (
+        0.5 * float(np.sum(np.abs(p - q))),
+        float(np.max(np.abs(p - q))),
+        bool(np.argmax(p) == np.argmax(q)),
     )
 
 
-def fb_rows(base, ts, alleles, r, mu, h, start, end, viterbi_path, quick):
+def fb_rows(
+    base, ts, alleles, r, mu, h, start, end, viterbi_path, quick, per_site_r=False
+):
     wts, wtree_sequence, a, b = window_reference(ts, alleles, start, end)
     hw = h[a:b]
     rw, muw = r[a:b], mu[a:b]
@@ -421,7 +492,9 @@ def fb_rows(base, ts, alleles, r, mu, h, start, end, viterbi_path, quick):
     viterbi_node = viterbi_path[a - start + sites]
     rows = []
     exact = None
-    for strategy, parameter, kwargs in fb_strategies(rw, ts.num_nodes, quick):
+    for strategy, parameter, kwargs in fb_strategies(
+        rw, ts.num_nodes, quick, per_site_r
+    ):
         am = tsls.Hmm(wtree_sequence, rw, muw, **kwargs)
         before = time.perf_counter()
         fm = am.forward_matrix(hw)
@@ -434,8 +507,12 @@ def fb_rows(base, ts, alleles, r, mu, h, start, end, viterbi_path, quick):
         stored_f = np.diff(fm.offsets)
         stored_b = np.diff(bm.offsets)
         if exact is None:
-            exact = (fm.log_likelihood, post, forward_time + backward_time,
-                     np.mean(stored_f) + np.mean(stored_b))
+            exact = (
+                fm.log_likelihood,
+                post,
+                forward_time + backward_time,
+                np.mean(stored_f) + np.mean(stored_b),
+            )
         compared = [compare_posterior(p, q) for (_, p), (_, q) in zip(post, exact[1])]
         tv = [c[0] for c in compared]
         max_abs = [c[1] for c in compared]
@@ -469,7 +546,10 @@ def fb_rows(base, ts, alleles, r, mu, h, start, end, viterbi_path, quick):
                 "argmax_agreement": float(np.mean(argmax)),
                 "posterior_viterbi_node": float(
                     np.mean(
-                        [0 if p is None else p[u] for (_, p), u in zip(post, viterbi_node)]
+                        [
+                            0 if p is None else p[u]
+                            for (_, p), u in zip(post, viterbi_node)
+                        ]
                     )
                 ),
             }
@@ -493,16 +573,27 @@ def run_task(task):
         "reference": reference,
         "mu_label": mu_label,
         "mu": mu[0],
-        "r": r[0],
+        "r": float(np.median(r[1:])),
         "num_nodes": ts.num_nodes,
         "query": query_id,
         "num_sites": end - start,
     }
+    per_site_r = name == "tgp_samples_map"
     try:
         vrows, path = viterbi_rows(
-            base, tree_sequence, ts, r, mu, num_alleles, h, start, end, quick
+            base,
+            tree_sequence,
+            ts,
+            r,
+            mu,
+            num_alleles,
+            h,
+            start,
+            end,
+            quick,
+            per_site_r,
         )
-        frows = fb_rows(base, ts, alleles, r, mu, h, start, end, path, quick)
+        frows = fb_rows(base, ts, alleles, r, mu, h, start, end, path, quick, per_site_r)
     except (MemoryError, tsls.LibraryError) as error:
         if isinstance(error, tsls.LibraryError) and "memory" not in str(error).lower():
             raise
@@ -511,15 +602,31 @@ def run_task(task):
     return vrows, frows
 
 
-def make_tasks(quick):
+def make_tasks(quick, workloads=WORKLOADS):
+    tasks = make_constant_rate_tasks(quick)
+    tasks = [task for task in tasks if task[0] in workloads]
+    if "tgp_samples_map" in workloads:
+        _, num_queries = load_queries(DATA / "tgp_chr20p" / "samples")
+        num_samples = 1 if quick else NUM_MAP_SAMPLES
+        queries = np.unique(np.linspace(0, num_queries - 1, num_samples).astype(int))
+        for label, mu in MAP_MISMATCH[:1] if quick else MAP_MISMATCH:
+            for q in queries:
+                tasks.append(("tgp_samples_map", "samples", label, mu, int(q), quick))
+    return tasks
+
+
+def make_constant_rate_tasks(quick):
     tasks = []
     sc2ts_sizes = [10000] if quick else [10000, 100000]
     num_sc2ts = 3 if quick else 10
     for size in sc2ts_sizes:
         for q in np.unique(np.linspace(0, 109, num_sc2ts).astype(int)):
             tasks.append(("sc2ts", size, "sc2ts", np.nan, int(q), quick))
-    groups = ["ancestors_g84"] if quick else ["ancestors_g84", "ancestors_g1000",
-                                              "ancestors_g1485"]
+    groups = (
+        ["ancestors_g84"]
+        if quick
+        else ["ancestors_g84", "ancestors_g1000", "ancestors_g1485"]
+    )
     num_ancestors = 2 if quick else 6
     for group in groups:
         _, num_queries = load_queries(DATA / "tgp_chr20p" / group)
@@ -543,8 +650,8 @@ def limit_memory():
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY_LIMIT, MEMORY_LIMIT))
 
 
-def run(quick, num_processes):
-    tasks = make_tasks(quick)
+def run(quick, num_processes, workloads, results):
+    tasks = make_tasks(quick, workloads)
     viterbi, fb = [], []
     # Tasks for the same workload are submitted together so that a worker's
     # cached workload is reused; maxtasksperchild isn't available here, so
@@ -559,9 +666,9 @@ def run(quick, num_processes):
             vrows, frows = future.result()
             viterbi.extend(vrows)
             fb.extend(frows)
-    RESULTS.mkdir(exist_ok=True)
-    pd.DataFrame(viterbi).to_csv(RESULTS / "viterbi.csv", index=False)
-    pd.DataFrame(fb).to_csv(RESULTS / "forward_backward.csv", index=False)
+    results.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(viterbi).to_csv(results / "viterbi.csv", index=False)
+    pd.DataFrame(fb).to_csv(results / "forward_backward.csv", index=False)
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +678,8 @@ def run(quick, num_processes):
 
 def workload_label(df):
     label = df.workload + " " + df.reference.astype(str)
-    return np.where(df.workload == "tgp_samples", label + " mu " + df.mu_label, label)
+    samples = df.workload.isin(["tgp_samples", "tgp_samples_map"])
+    return np.where(samples, label + " mu " + df.mu_label, label)
 
 
 def fmt(x):
@@ -591,9 +699,10 @@ def table(df, columns):
     return lines
 
 
-def analyse():
-    v = pd.read_csv(RESULTS / "viterbi.csv")
-    f = pd.read_csv(RESULTS / "forward_backward.csv")
+def analyse(results):
+    # mu labels such as "1e-20" would otherwise be read as numbers
+    v = pd.read_csv(results / "viterbi.csv", dtype={"mu_label": str})
+    f = pd.read_csv(results / "forward_backward.csv", dtype={"mu_label": str})
     v["label"] = workload_label(v)
     f["label"] = workload_label(f)
     lines = ["# Thresholding evaluation: summary", ""]
@@ -624,6 +733,17 @@ def analyse():
 
     lines += ["## Viterbi escalation", ""]
     esc = v[v.strategy == "escalation"].groupby("label")
+    if len(esc) == 0:
+        esc = None
+    lines += escalation_lines(esc) if esc is not None else ["(not run)", ""]
+    lines += ["## Viterbi strategies", ""]
+    lines += strategy_lines(v, f)
+    (results / "summary.md").write_text("\n".join(lines))
+    logger.info(f"Wrote {results / 'summary.md'}")
+
+
+def escalation_lines(esc):
+    lines = []
     summary = pd.DataFrame(
         {
             "queries": esc.size(),
@@ -634,8 +754,11 @@ def analyse():
             "optimal": esc.optimal.mean(),
         }
     ).reset_index()
-    lines += table(summary, list(summary.columns)) + [""]
-    lines += ["## Viterbi strategies", ""]
+    return lines + table(summary, list(summary.columns)) + [""]
+
+
+def strategy_lines(v, f):
+    lines = []
     for label, group in v[~v.strategy.isin(["exact", "escalation"])].groupby("label"):
         g = group.groupby(["strategy", "parameter"], dropna=False)
         summary = pd.DataFrame(
@@ -679,8 +802,7 @@ def analyse():
             }
         ).reset_index()
         lines += [f"### {label}", ""] + table(summary, list(summary.columns)) + [""]
-    (RESULTS / "summary.md").write_text("\n".join(lines))
-    logger.info(f"Wrote {RESULTS / 'summary.md'}")
+    return lines
 
 
 def main():
@@ -688,11 +810,23 @@ def main():
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--num-processes", "-t", type=int, default=1)
     parser.add_argument("--analyse-only", action="store_true")
+    parser.add_argument(
+        "--workloads",
+        default=",".join(WORKLOADS),
+        help=f"Comma-separated workloads to run (default: all of {WORKLOADS})",
+    )
+    parser.add_argument(
+        "--results", type=pathlib.Path, default=RESULTS, help="Results directory"
+    )
     args = parser.parse_args()
+    workloads = args.workloads.split(",")
+    unknown = set(workloads) - set(WORKLOADS)
+    if len(unknown) > 0:
+        parser.error(f"Unknown workloads: {sorted(unknown)}")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if not args.analyse_only:
-        run(args.quick, args.num_processes)
-    analyse()
+        run(args.quick, args.num_processes, workloads, args.results)
+    analyse(args.results)
 
 
 if __name__ == "__main__":
