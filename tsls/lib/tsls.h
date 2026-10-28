@@ -39,14 +39,6 @@
 /* Process every Viterbi site in full (see tsls_hmm_process_site_sparse) */
 #define TSLS_DISABLE_SPARSE      (1 << 3)
 
-/* Experimental pruning modes. After normalisation at each site, pruned
- * nodes are given the value likelihood_threshold. */
-#define TSLS_PRUNE_NONE     0
-/* Prune nodes with likelihood < parameter * max likelihood */
-#define TSLS_PRUNE_RELATIVE 1
-/* Prune all but the parameter nodes with the largest likelihoods */
-#define TSLS_PRUNE_TOP_N    2
-
 typedef int8_t allele_t;
 
 /* The maximum number of distinct alleles at a site */
@@ -173,8 +165,10 @@ typedef struct {
     double sequence_length;
     /* Input LS model rates */
     double likelihood_threshold;
-    int pruning_mode;
-    double pruning_parameter;
+    /* After normalisation at each site, nodes with values below this times
+     * the maximum are given the value likelihood_threshold, in all three
+     * algorithms (0: off; see tsls_hmm_set_relative_prune_threshold) */
+    double relative_prune_threshold;
     /* In Viterbi, nodes with normalised values below this are given the
      * value likelihood_threshold (see tsls_hmm_set_prune_threshold) */
     double prune_threshold;
@@ -260,7 +254,7 @@ int tsls_index_free(tsls_index_t *self);
 int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     const double *recombination_rate, const double *mismatch_rate,
     double likelihood_threshold, int flags);
-int tsls_hmm_set_pruning(tsls_hmm_t *self, int mode, double parameter);
+int tsls_hmm_set_relative_prune_threshold(tsls_hmm_t *self, double threshold);
 int tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold);
 int tsls_hmm_free(tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_values(const tsls_hmm_t *self);

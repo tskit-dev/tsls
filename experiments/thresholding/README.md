@@ -65,12 +65,12 @@ q = 2.33e-8. We set mu so that k mismatches cost the same as one switch
 | Viterbi | `floor` t | raises values below t to t (`likelihood_threshold`) | none if t > q |
 | | `lossless_prune` | drops nodes below q (`tsls.model.lossless_threshold`) | changes no later values |
 | | `prune_k` k | drops nodes below `e^k` (`tsls.model.path_threshold`) | optimal if the optimal path has ≤ k mismatches; certifies a path with odds ≥ t |
-| | `top_n` n | keeps the n largest values | none; turns off sparse sites |
+| | `top_n` n | keeps the n largest values (since removed) | none; turns off sparse sites |
 | | `escalation` | `prune_k` at k = 0, 1, 2, 4 until the path is certified, then exact | always optimal |
 | Forward/backward | `floor` t | raises values below t to t | none |
 | | `relative` f | drops nodes below f × max | none |
 | | `relative_q` c | drops nodes below c·q × max, below the mass recombination alone gives a node | none proven; near-exact here |
-| | `top_n` n | keeps the n largest values | none |
+| | `top_n` n | keeps the n largest values (since removed) | none |
 
 ### Measures
 
@@ -276,12 +276,131 @@ Findings:
   - The k-mismatch certificate doesn't suit sample matching, where paths
     have hundreds of switches.
 - **Forward-backward:**
-  - Use `pruning=("relative", c * q)` with c ≤ 1. It is accurate to about
+  - Use `relative_prune_threshold=c * q` with c ≤ 1. It is accurate to about
     1e-3 in the log likelihood here, and saves 10–25% with mismatches.
   - Larger thresholds trade large, unbounded errors for speed.
   - Memory, not time, is the limit for forward-backward on tsinfer data.
     The useful next step is a bound on the mass each prune removes, and a
     forward pass that keeps less.
+
+## Sample matching under a recombination map (2026-10-28)
+
+`tgp_samples_map` reruns sample matching with per-site recombination
+probabilities from the HapMap II GRCh38 chr20 map
+(`benchmarking/genetic_map.py`; Haldane's map function, as tsinfer's
+`recombination_rate`), with mu = 1e-20, 1e-8 and 1e-4, on 4 samples each:
+
+```
+uv run python evaluate.py --workloads tgp_samples_map --results results/map -t 2
+```
+
+It takes about 5 minutes. On these sites the switch odds q range from
+7e-18 to about 1e-9, with median 1.9e-13; tsinfer's constant r = 0.01 gives
+q = 2.3e-8 at every site. The grid is the strategies kept after the
+constant-rate runs (see below), floor 1e-8 (to check that a floor that was
+below q is now harmful), and thresholds at c times the median q
+(`prune_qmed` for Viterbi, `relative_qmed` for forward-backward), which
+have no guarantee. Escalation is not run.
+
+### Exact runs
+
+| mu | mismatches | switches | V time | V values mean / max | F values mean / max | B stored | FB time (5k sites) |
+|---|---|---|---|---|---|---|---|
+| 1e-20 | 25 | 232 | 4.1 s | 111 / 988 | 202 / 975 | 407 | 0.21 s |
+| 1e-8 | 94 | 159 | 4.7 s | 140 / 1,356 | 446 / 1,993 | 702 | 0.38 s |
+| 1e-4 | 142 | 135 | 5.5 s | 173 / 1,720 | 665 / 2,571 | 952 | 0.51 s |
+
+Viterbi tracks 2–7× as many nodes as with the constant rate (15–100), and
+takes up to twice as long. Forward and backward track about as many as
+with the constant rate at similar numbers of mismatches.
+
+### Viterbi
+
+Mean over queries; time and values are ratios to exact.
+
+| mu | strategy | time | values | optimal | max loss |
+|---|---|---|---|---|---|
+| 1e-20 | floor 1e-8 | 0.45 | 0.17 | 0/4 | 1e6 |
+| | lossless_prune (7e-18) | 1.04 | 0.99 | 4/4 | 0 |
+| | prune_k 0 | 0.51 | 0.16 | 0/4 | 1,560 |
+| | prune_k 1, 2, 3 | 1.00–1.04 | 0.99–1.00 | 4/4 | 0 |
+| | prune_qmed 0.01 / 1 | 1.02 / 1.03 | 0.99 / 0.96 | 3/4 / 0/4 | 0.51 / 17 |
+| 1e-8 | floor 1e-8 | 0.96 | 1.04 | 0/4 | 4e5 |
+| | lossless_prune | 1.02 | 0.99 | 4/4 | 0 |
+| | prune_k 0, 1 | 0.47–0.57 | 0.05–0.25 | 0/4 | 4e5 |
+| | prune_k 2, 3 | 0.96–0.99 | 0.99–1.00 | 4/4 | 0 |
+| | prune_qmed 0.01 / 1 | 1.01 / 1.06 | 0.99 / 0.97 | 4/4 / 2/4 | 0 / 5.9 |
+| 1e-4 | floor 1e-8 | 0.90 | 0.89 | 0/4 | 1.7e5 |
+| | lossless_prune | 0.95 | 1.00 | 4/4 | 0 |
+| | prune_k 0, 1, 2 | 0.36–0.52 | 0.04–0.27 | 0/4 | 2e5 |
+| | prune_k 3 | 1.00 | 0.94 | 0/4 | 11 |
+| | prune_qmed 0.01 / 1 | 1.00 / 0.95 | 0.99 / 0.97 | 4/4 / 2/4 | 0 / 4.9 |
+
+No path was certified.
+
+### Forward-backward
+
+| mu | strategy | time | values | max \|Δ logL\| | max TV |
+|---|---|---|---|---|---|
+| 1e-20 | floor 1e-8 | 0.95 | 0.88 | 29 | 0.89 |
+| | relative_q 0.01, 1 | 1.01–1.03 | 0.94 | 2e-12 | 2e-14 |
+| | relative_qmed 0.01 / 1 | 1.02 / 0.99 | 0.94 | 2e-12 / 7e-6 | 9e-11 / 3e-5 |
+| 1e-8 | floor 1e-8 | 0.60 | 0.53 | 14 | 0.89 |
+| | relative_q 0.01 / 1 | 1.14 / 0.91 | 0.99 / 0.89 | 2e-13 / 1e-7 | 2e-13 / 4e-10 |
+| | relative_qmed 0.01 / 1 | 0.85 / 0.84 | 0.79 / 0.76 | 1e-7 | 4e-9 / 3e-5 |
+| 1e-4 | floor 1e-8 | 0.47 | 0.43 | 12 | 0.60 |
+| | relative_q 0.01 / 1 | 1.06 / 1.00 | 1.00 | 4e-13 | 4e-13 |
+| | relative_qmed 0.01 / 1 | 0.96 / 0.80 | 0.97 / 0.81 | 3e-9 / 1.3e-3 | 2e-9 / 3e-6 |
+
+Here `relative_q` uses the smallest q in the 5,000-site window, which is
+larger than the smallest over the whole query.
+
+### Findings
+
+1. **A floor of 1e-8, safe with the constant rate, is now catastrophic.**
+   Every Viterbi path is wrong (losses of 1e5–1e6), and forward-backward
+   log likelihoods are off by 5–29 with TV up to 0.89. No fixed number is
+   safe under a map, because q moves by orders of magnitude between sites.
+2. **Thresholds at the smallest q do nothing.** `lossless_prune` is 7e-18,
+   and changes neither values nor time.
+3. **Viterbi pruning still doesn't pay.** Every threshold that kept the
+   optimal path (`lossless_prune`, `prune_k` at k ≥ 1 or 2, `prune_qmed`
+   0.01) changed time by no more than noise, and values by 1–6%. The
+   thresholds that save time (`prune_k` below the path's mismatch rate, a
+   floor) give wrong paths. Even at the median q (`prune_qmed 1`), half or
+   more of the paths are wrong and nothing is saved: the nodes Viterbi
+   tracks are mostly within the switch odds of the maximum, so there is
+   little to prune at any safe level. At mu = 1e-4, `prune_k 3` isn't
+   enough either: the paths have about 140 mismatches.
+4. **Forward-backward pruning relative to a typical q looks promising.**
+   `relative_qmed 1` saves 16–24% of values and time with mismatches, with
+   log-likelihood errors of at most 1.3e-3 and TV of at most 3e-5. It has no
+   guarantee: a per-site cutoff (`docs/likelihood_model.md`, later work)
+   would make it principled.
+
+## Strategies dropped from further exploration
+
+On the constant-rate and map results together:
+
+- **Floors above q** (including sc2ts's `0.99 mu^k`): wrong paths in every
+  scenario, unboundedly so on tsinfer data. Under a map, any fixed floor is
+  above q at most sites.
+- **Floors in general**: below q they do nothing, above q they are
+  harmful, and in forward-backward they add mass. `likelihood_threshold`
+  stays only as an underflow guard.
+- **`top_n`**: slow (it turns off sparse sites), inexact, no guarantee.
+  Removed from the engine; relative pruning is now
+  `Hmm(relative_prune_threshold=f)`.
+- **`relative` with a fixed fraction**: harmful above q, and can't follow
+  a map. Thresholds relative to q replace it.
+- **Escalation**: 2–5× exact everywhere, and never certifies sample paths.
+  Revisit only if the certificate is extended to switches.
+- **`lossless_prune` at the smallest q**: does nothing under a map. Only a
+  per-site version is worth keeping.
+
+Kept: exact (the reference), `prune_k` / `path_threshold` (the only
+guarantee, for sc2ts-style mismatch budgets), and pruning relative to q,
+to be made per-site, mainly for forward-backward.
 
 ## Earlier experiments (`thresholding.py`, superseded)
 
@@ -315,9 +434,9 @@ reached again by recombination.
 - **`floor`** is the existing `likelihood_threshold`: any value below `t` is
   set to `t`.
 - **`relative`** prunes nodes with a value below `f` times the maximum. Use
-  `pruning=("relative", f)` (experimental option).
+  `relative_prune_threshold=f`.
 - **`top_n`** prunes all but the `n` nodes with the largest values. Nodes tied
-  with the n-th value are kept. Use `pruning=("top_n", n)` (experimental option).
+  with the n-th value are kept. (Since removed from the engine.)
 - **`lossless_floor`** is `floor` at `t* = (ρ/n) / (1 − ρ + ρ/n)`. In Viterbi,
   any node below `t*` loses to recombination at the next site, so this floor
   changes no Viterbi likelihoods. With `weight_by_n=False`, as sc2ts uses,

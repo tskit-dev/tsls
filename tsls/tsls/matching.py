@@ -175,10 +175,12 @@ class Hmm(_tsls.Hmm):
 
     After normalisation at each site, values below likelihood_threshold are
     set to it; it is there to avoid underflow, and should be well below the
-    switch odds. The experimental ``pruning`` option also sets the values of
-    some nodes to likelihood_threshold: either ``("relative", f)``, for
-    nodes with values less than f times the maximum, or ``("top_n", n)``,
-    for all but the n nodes with the largest values. If ``count_distinct``
+    switch odds. ``relative_prune_threshold`` f also sets the values of
+    nodes less than f times the maximum to likelihood_threshold, in Viterbi,
+    forward and backward. This is approximate (pruning relative to the
+    switch odds, f = c q with c <= 1, is accurate in practice; see
+    experiments/thresholding), and turns off sparse Viterbi sites. If
+    ``count_distinct``
     is True, the mean number of distinct values per site in Viterbi is
     recorded in ``mean_num_distinct_values``.
 
@@ -194,8 +196,6 @@ class Hmm(_tsls.Hmm):
     values computed per site, which is less than the list for sparse sites.
     """
 
-    PRUNING_MODES = {"relative": 1, "top_n": 2}
-
     def __init__(
         self,
         ts,
@@ -207,7 +207,7 @@ class Hmm(_tsls.Hmm):
         prune_threshold=None,
         weight_by_n=None,
         extended_checks=False,
-        pruning=None,
+        relative_prune_threshold=None,
         count_distinct=False,
         sparse=True,
     ):
@@ -227,12 +227,8 @@ class Hmm(_tsls.Hmm):
             "count_distinct": count_distinct,
             "sparse": sparse,
         }
-        if pruning is not None:
-            mode, parameter = pruning
-            if mode not in self.PRUNING_MODES:
-                raise ValueError(f"Unknown pruning mode {mode!r}")
-            kwargs["pruning_mode"] = self.PRUNING_MODES[mode]
-            kwargs["pruning_parameter"] = parameter
+        if relative_prune_threshold is not None:
+            kwargs["relative_prune_threshold"] = relative_prune_threshold
         if likelihood_threshold is not None:
             kwargs["likelihood_threshold"] = likelihood_threshold
         if prune_threshold is not None:

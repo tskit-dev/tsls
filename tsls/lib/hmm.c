@@ -777,7 +777,7 @@ tsls_hmm_free(tsls_hmm_t *self)
  * threshold the value likelihood_threshold. A node with a value below t
  * has odds less than t of being on an optimal path rather than the best
  * node at the site, so any path whose odds relative to the best path are at
- * least t is kept (see docs/likelihood_model.md). Unlike the experimental
+ * least t is kept (see docs/likelihood_model.md). Unlike relative
  * pruning, this works with sparse sites. */
 int
 tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold)
@@ -793,29 +793,20 @@ out:
     return ret;
 }
 
+/* After normalisation at each site (by the maximum for Viterbi and the sum
+ * for forward and backward), give nodes with values below threshold times
+ * the maximum the value likelihood_threshold. This is approximate, and turns
+ * off sparse Viterbi sites; 0 turns it off. */
 int
-tsls_hmm_set_pruning(tsls_hmm_t *self, int mode, double parameter)
+tsls_hmm_set_relative_prune_threshold(tsls_hmm_t *self, double threshold)
 {
     int ret = 0;
 
-    if (mode == TSLS_PRUNE_NONE) {
-        parameter = 0;
-    } else if (mode == TSLS_PRUNE_RELATIVE) {
-        if (!(parameter >= 0 && parameter <= 1)) {
-            ret = TSLS_ERR_BAD_PRUNING;
-            goto out;
-        }
-    } else if (mode == TSLS_PRUNE_TOP_N) {
-        if (!(parameter >= 1)) {
-            ret = TSLS_ERR_BAD_PRUNING;
-            goto out;
-        }
-    } else {
+    if (!(threshold >= 0 && threshold <= 1)) {
         ret = TSLS_ERR_BAD_PRUNING;
         goto out;
     }
-    self->pruning_mode = mode;
-    self->pruning_parameter = parameter;
+    self->relative_prune_threshold = threshold;
 out:
     return ret;
 }
@@ -841,7 +832,7 @@ tsls_hmm_sort_values(tsls_hmm_t *self)
         cmp_double);
 }
 
-/* Apply the experimental pruning, giving pruned nodes the value
+/* Apply relative pruning, giving pruned nodes the value
  * likelihood_threshold. The values must be normalised. */
 static void
 tsls_hmm_prune(tsls_hmm_t *self)
@@ -850,26 +841,16 @@ tsls_hmm_prune(tsls_hmm_t *self)
     const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
     const int num_likelihood_nodes = self->num_likelihood_nodes;
     double max_L, cutoff;
-    int j, n;
+    int j;
 
-    if (self->pruning_mode == TSLS_PRUNE_NONE || num_likelihood_nodes == 0) {
+    if (self->relative_prune_threshold == 0 || num_likelihood_nodes == 0) {
         return;
     }
-    if (self->pruning_mode == TSLS_PRUNE_RELATIVE) {
-        max_L = 0;
-        for (j = 0; j < num_likelihood_nodes; j++) {
-            max_L = TSK_MAX(max_L, L[L_nodes[j]].value);
-        }
-        cutoff = self->pruning_parameter * max_L;
-    } else {
-        n = (int) self->pruning_parameter;
-        if (num_likelihood_nodes <= n) {
-            return;
-        }
-        tsls_hmm_sort_values(self);
-        /* Keep values >= the nth largest (ties at the cutoff are kept) */
-        cutoff = self->values_tmp[num_likelihood_nodes - n];
+    max_L = 0;
+    for (j = 0; j < num_likelihood_nodes; j++) {
+        max_L = TSK_MAX(max_L, L[L_nodes[j]].value);
     }
+    cutoff = self->relative_prune_threshold * max_L;
     for (j = 0; j < num_likelihood_nodes; j++) {
         if (L[L_nodes[j]].value < cutoff) {
             L[L_nodes[j]].value = self->likelihood_threshold;
@@ -2092,7 +2073,7 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
     const int direction = mode == MODE_BACKWARD ? TSK_DIR_REVERSE : TSK_DIR_FORWARD;
     const bool sparse = mode == MODE_VITERBI && output == NULL
                         && !(self->flags & (TSLS_DISABLE_SPARSE | TSLS_COUNT_DISTINCT))
-                        && self->pruning_mode == TSLS_PRUNE_NONE;
+                        && self->relative_prune_threshold == 0;
     tsk_id_t site, first_site;
     double previous_total = -1;
     bool valid, new_tree;

@@ -7,12 +7,12 @@ likelihood values in a different way:
 
 - floor: values below t are set to t (the likelihood_threshold option);
 - relative: nodes with values below f times the maximum are pruned;
-- top_n: all but the n nodes with the largest values are pruned;
 - lossless_floor: a floor at t* = (rho / n) / (1 - rho + rho / n). In Viterbi,
   any node below t* is beaten by recombination at the next site, so this
   floor does not change the Viterbi likelihoods.
 
-Pruned nodes get the value likelihood_threshold (by default the smallest
+(The top_n method, which kept the n largest values, has been removed from
+the engine; see README.md.) Pruned nodes get the value likelihood_threshold (by default the smallest
 positive double), so they can then only be reached by recombination.
 
 Scenarios:
@@ -55,10 +55,8 @@ RESULTS = pathlib.Path(__file__).resolve().parent / "results"
 SC2TS_DATA = ROOT / "benchmarking" / "data"
 
 FLOOR_GRID = [1e-30, 1e-20, 1e-12, 1e-10, 1e-8, 1e-6, 1e-4, 1e-3, 1e-2]
-TOP_N_GRID = [10, 30, 100, 300, 1000, 3000]
 QUICK_FLOOR_GRID = [1e-20, 1e-8, 1e-4, 1e-2]
-QUICK_TOP_N_GRID = [10, 100, 1000]
-METHODS = ["floor", "relative", "top_n"]
+METHODS = ["floor", "relative"]
 CALIBRATION_BINS = np.linspace(0, 1, 21)
 
 
@@ -67,11 +65,9 @@ def method_grid(quick, rho, n, viterbi=True):
     Return the list of (method, parameter, matcher kwargs) tuples to run.
     """
     floors = QUICK_FLOOR_GRID if quick else FLOOR_GRID
-    top_ns = QUICK_TOP_N_GRID if quick else TOP_N_GRID
     grid = [("exact", np.nan, {})]
     grid += [("floor", t, {"likelihood_threshold": t}) for t in floors]
-    grid += [("relative", f, {"pruning": ("relative", f)}) for f in floors]
-    grid += [("top_n", k, {"pruning": ("top_n", k)}) for k in top_ns]
+    grid += [("relative", f, {"relative_prune_threshold": f}) for f in floors]
     if viterbi:
         t_star = (rho / n) / (1 - rho + rho / n)
         # Just below t*, so that pruned nodes lose the tie with recombination
