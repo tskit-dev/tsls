@@ -2223,9 +2223,14 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
                  * site in full */
                 self->tree_numbered = false;
                 self->all_changed = true;
-                self->tree_end_site = TSK_MIN(end,
-                    (tsk_id_t) tsk_search_sorted(
-                        position, self->num_sites, tp.interval.right));
+                /* Scan forward rather than binary search: trees often span
+                 * only a site or two, so the scans add up to a pass over
+                 * the sites, where the searches missed the cache. */
+                self->tree_end_site = site + 1;
+                while (self->tree_end_site < end
+                       && position[self->tree_end_site] < tp.interval.right) {
+                    self->tree_end_site++;
+                }
                 new_tree = false;
             }
             /* Numbering the tree takes about as long as processing a site
