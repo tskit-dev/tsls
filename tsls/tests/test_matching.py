@@ -1057,6 +1057,30 @@ class TestSparse:
             num_sparse_sites += am.num_sparse_sites
         assert num_sparse_sites > 0
 
+    def test_sites_without_mutations(self):
+        # Trees whose remaining sites have no mutations are numbered too
+        ts = wright_fisher_ts(2, num_trees_hint=3)
+        tables = ts.dump_tables()
+        m = ts.num_sites
+        tables.mutations.keep_rows(tables.mutations.site < m // 2)
+        tables.compute_mutation_parents()
+        ts = tables.tree_sequence()
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        rho = np.full(m, 0.02)
+        mu = np.full(m, 0.01)
+        for h in noisy_queries(ts, A, present, 2):
+            for start, end in [(0, m), (m // 2, m), (m // 2 + 3, m - 2)]:
+                # A new HMM, so the first tree numbered is one of these
+                am = tsls.Hmm(
+                    ts, rho, mu, alleles=ALLELES, extended_checks=True, index_min_sites=1
+                )
+                match = np.zeros(m, dtype=np.int8)
+                left, right, parent = am.find_path(h, start, end, match)
+                path = path_by_site(ts, left, right, parent, start, end)
+                np.testing.assert_array_equal(
+                    match[start:end], A[np.arange(start, end), path]
+                )
+
     def test_rates_change(self):
         # Rates that change between sites don't stop sites being sparse
         ts = wright_fisher_ts(1, num_trees_hint=0)

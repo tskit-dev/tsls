@@ -2160,7 +2160,8 @@ tsls_hmm_number_tree(tsls_hmm_t *self, tsk_id_t site)
     const tsk_size_t mutations_start = index->site_mutations_offset[site];
     const tsk_size_t mutations_stop
         = index->site_mutations_offset[self->tree_end_site];
-    const size_t max_ranges = mutations_stop - mutations_start;
+    /* At least one, as a site's segments need room for the sentinel */
+    const size_t max_ranges = mutations_stop - mutations_start + 1;
     const tsk_id_t best_node
         = site > 0 ? self->max_likelihood_node[site - 1] : NULL_NODE;
     mutation_range_t *ranges;
