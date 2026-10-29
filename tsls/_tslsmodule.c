@@ -230,9 +230,11 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     double relative_prune_threshold = 0;
     int count_distinct = 0;
     int sparse = 1;
+    int index_min_sites = 4;
     static char *kwlist[] = { "tree_sequence", "recombination", "mismatch",
         "extended_checks", "likelihood_threshold", "prune_threshold",
-        "relative_prune_threshold", "count_distinct", "sparse", NULL };
+        "relative_prune_threshold", "count_distinct", "sparse", "index_min_sites",
+        NULL };
     TreeSequence *tree_sequence = NULL;
     PyObject *recombination = NULL;
     PyObject *mismatch = NULL;
@@ -246,10 +248,10 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
 
     self->hmm = NULL;
     self->tree_sequence = NULL;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|idddii", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!OO|idddiii", kwlist,
             &TreeSequenceType, &tree_sequence, &recombination, &mismatch,
             &extended_checks, &likelihood_threshold, &prune_threshold,
-            &relative_prune_threshold, &count_distinct, &sparse)) {
+            &relative_prune_threshold, &count_distinct, &sparse, &index_min_sites)) {
         goto out;
     }
     self->tree_sequence = tree_sequence;
@@ -308,6 +310,11 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
         goto out;
     }
     err = tsls_hmm_set_prune_threshold(self->hmm, prune_threshold);
+    if (err != 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = tsls_hmm_set_index_min_sites(self->hmm, index_min_sites);
     if (err != 0) {
         handle_library_error(err);
         goto out;
@@ -719,6 +726,19 @@ out:
 }
 
 static PyObject *
+Hmm_get_mean_delta_size(Hmm *self, void *closure)
+{
+    PyObject *ret = NULL;
+
+    if (Hmm_check_state(self) != 0) {
+        goto out;
+    }
+    ret = Py_BuildValue("d", tsls_hmm_get_mean_delta_size(self->hmm));
+out:
+    return ret;
+}
+
+static PyObject *
 Hmm_get_num_sparse_sites(Hmm *self, void *closure)
 {
     PyObject *ret = NULL;
@@ -776,6 +796,9 @@ static PyGetSetDef Hmm_getsetters[] = {
         "The maximum length of the likelihood list after a site in the last run" },
     { "mean_num_updated", (getter) Hmm_get_mean_num_updated, NULL,
         "The mean number of node values computed per site in the last run" },
+    { "mean_delta_size", (getter) Hmm_get_mean_delta_size, NULL,
+        "The mean number of entries in the traceback delta per site in the last "
+        "Viterbi run" },
     { "num_sparse_sites", (getter) Hmm_get_num_sparse_sites, NULL,
         "The number of sites processed sparsely in the last Viterbi run." },
     { "mean_num_distinct_values",

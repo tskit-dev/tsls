@@ -190,6 +190,9 @@ class Hmm(_tsls.Hmm):
     processing every site in full (``sparse=False``), but may choose a
     different path among equally likely ones.
 
+    ``index_min_sites`` (for tuning and tests) is the number of sites a
+    tree must have left for it to be numbered for sparse sites.
+
     After each run, ``mean_num_values`` and ``max_num_values`` give the
     mean and maximum number of nodes with their own value (the likelihood
     list) after each site, and ``mean_num_updated`` the mean number of node
@@ -210,6 +213,7 @@ class Hmm(_tsls.Hmm):
         relative_prune_threshold=None,
         count_distinct=False,
         sparse=True,
+        index_min_sites=None,
     ):
         if weight_by_n is not None:
             raise ValueError(
@@ -233,6 +237,8 @@ class Hmm(_tsls.Hmm):
             kwargs["likelihood_threshold"] = likelihood_threshold
         if prune_threshold is not None:
             kwargs["prune_threshold"] = prune_threshold
+        if index_min_sites is not None:
+            kwargs["index_min_sites"] = index_min_sites
         self.tree_sequence = ts
         self.ts = ts.ts
         super().__init__(ts, recombination=recombination, mismatch=mismatch, **kwargs)

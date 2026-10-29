@@ -591,18 +591,20 @@ tsls_hmm_check_state(const tsls_hmm_t *self)
         }
         assert(self->tree[u].allelic_state
                == (self->tree[u].parent == NULL_NODE ? ROOT_ALLELE : TSK_NULL));
-        if (self->likelihood[u].value >= 0) {
-            /* Nodes with likelihoods are marked for the walk caches */
-            assert(self->tree[u].cache_stamp == self->cache_stamp);
-            assert(self->tree[u].listed_ancestor == u);
-        } else if (self->tree[u].cache_stamp == self->cache_stamp) {
+        /* Nodes with likelihoods are marked as listed for the walks */
+        assert((self->tree[u].cache_stamp == TSLS_LISTED_STAMP)
+               == (self->likelihood[u].value >= 0));
+        assert(self->tree[u].cache_stamp == TSLS_LISTED_STAMP
+               || self->tree[u].cache_stamp <= self->cache_stamp);
+        if (self->likelihood[u].value < 0 && tsls_hmm_in_tree(self, u)
+            && self->tree[u].cache_stamp == self->cache_stamp) {
             /* A cached walk leads to the nearest ancestor with a likelihood */
             v = self->tree[u].parent;
             while (self->likelihood[v].value < 0) {
                 v = self->tree[v].parent;
             }
             a = self->tree[u].listed_ancestor;
-            while (self->tree[a].listed_ancestor != a) {
+            while (self->tree[a].cache_stamp != TSLS_LISTED_STAMP) {
                 a = self->tree[a].listed_ancestor;
             }
             assert(a == v);
@@ -684,6 +686,7 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     memset(self, 0, sizeof(tsls_hmm_t));
     self->flags = flags;
     self->likelihood_threshold = likelihood_threshold;
+    self->index_min_sites = 4;
     self->index = index;
     self->tree_sequence = index->tree_sequence;
     self->num_sites = index->num_sites;
@@ -803,6 +806,23 @@ out:
     return ret;
 }
 
+/* Number a tree for sparse sites (see tsls_hmm_number_tree) if at least
+ * this many of its remaining sites could be sparse; 1 numbers every tree
+ * with a site left after the first. For tuning and tests. */
+int
+tsls_hmm_set_index_min_sites(tsls_hmm_t *self, int min_sites)
+{
+    int ret = 0;
+
+    if (min_sites < 1) {
+        ret = TSLS_ERR_BAD_PARAM_VALUE;
+        goto out;
+    }
+    self->index_min_sites = min_sites;
+out:
+    return ret;
+}
+
 /* After normalisation at each site (by the maximum for Viterbi and the sum
  * for forward and backward), give nodes with values below threshold times
  * the maximum the value likelihood_threshold. This is approximate, and turns
@@ -888,38 +908,33 @@ tsls_hmm_count_distinct(tsls_hmm_t *self)
     self->total_distinct_values += num_distinct;
 }
 
-/* Clear all the walk caches (see tsls_node_t), marking the nodes with
- * likelihoods again. The caches stay valid as long as no node on a cached
- * path gets a likelihood or a new parent, so this is only needed when one
- * does (see tsls_hmm_mark_listed and tsls_hmm_remove_edge). */
+/* Clear all the walk caches (see tsls_node_t). The caches stay valid as
+ * long as no node on a cached path gets a likelihood or a new parent, so
+ * this is only needed when one does (see tsls_hmm_mark_listed and
+ * tsls_hmm_remove_edge). Walks stop at listed nodes whatever their stamp,
+ * (they have the largest stamp), so a new stamp is enough. */
 static void
 tsls_hmm_clear_walk_caches(tsls_hmm_t *self)
 {
     tsls_node_t *restrict tree = self->tree;
-    const tsk_id_t *restrict L_nodes = self->likelihood_nodes;
-    tsk_id_t u;
     size_t k;
-    int j;
 
     self->cache_stamp++;
-    if (unlikely(self->cache_stamp == 0)) {
+    if (unlikely(self->cache_stamp == TSLS_LISTED_STAMP)) {
         for (k = 0; k < self->num_nodes; k++) {
-            tree[k].cache_stamp = 0;
+            if (tree[k].cache_stamp != TSLS_LISTED_STAMP) {
+                tree[k].cache_stamp = 0;
+            }
         }
         self->cache_stamp = 1;
     }
-    for (j = 0; j < self->num_likelihood_nodes; j++) {
-        u = L_nodes[j];
-        tree[u].cache_stamp = self->cache_stamp;
-        tree[u].listed_ancestor = u;
-    }
 }
 
-/* Mark u, which is being given a likelihood, as a node with a likelihood
- * for the walk caches. If u has a cached walk, walks from below may have
- * passed through it to an ancestor that is no longer the nearest, so the
- * caches are cleared first. The caller must not have walked from u itself
- * since it last changed. */
+/* Mark u, which is being given a likelihood, as listed for the walk
+ * caches. If u has a cached walk, walks from below may have passed through
+ * it to an ancestor that is no longer the nearest, so the caches are
+ * cleared first. The caller must not have walked from u itself since it
+ * last changed. */
 static inline void
 tsls_hmm_mark_listed(tsls_hmm_t *self, tsk_id_t u)
 {
@@ -928,16 +943,18 @@ tsls_hmm_mark_listed(tsls_hmm_t *self, tsk_id_t u)
     if (unlikely(tree[u].cache_stamp == self->cache_stamp)) {
         tsls_hmm_clear_walk_caches(self);
     }
-    tree[u].cache_stamp = self->cache_stamp;
+    tree[u].cache_stamp = TSLS_LISTED_STAMP;
     tree[u].listed_ancestor = u;
 }
 
 /* Mark u, which has just lost its likelihood, as a node without one whose
- * nearest ancestor with a likelihood is ancestor (via listed_ancestor). */
+ * nearest ancestor with a likelihood is ancestor (via listed_ancestor):
+ * walks that reach it continue there. */
 static inline void
 tsls_hmm_mark_unlisted(tsls_hmm_t *self, tsk_id_t u, tsk_id_t ancestor)
 {
     self->tree[u].listed_ancestor = ancestor;
+    self->tree[u].cache_stamp = self->cache_stamp;
 }
 
 static inline void
@@ -1064,15 +1081,15 @@ tsls_hmm_find_listed(tsls_hmm_t *self, tsk_id_t u)
     tsk_id_t v, a;
 
     v = u;
-    while (tree[v].cache_stamp != stamp) {
+    while (tree[v].cache_stamp < stamp) {
         v = tree[v].parent;
     }
     a = tree[v].listed_ancestor;
-    while (unlikely(tree[a].listed_ancestor != a)) {
+    while (unlikely(tree[a].cache_stamp != TSLS_LISTED_STAMP)) {
         a = tree[a].listed_ancestor;
     }
     v = u;
-    while (tree[v].cache_stamp != stamp) {
+    while (tree[v].cache_stamp < stamp) {
         tree[v].listed_ancestor = a;
         tree[v].cache_stamp = stamp;
         v = tree[v].parent;
@@ -1720,6 +1737,7 @@ tsls_hmm_store_traceback(tsls_hmm_t *self, const tsk_id_t site,
             (size_t) num_changes * sizeof(*previous_flag));
     }
     self->total_traceback_size += (size_t) self->num_likelihood_nodes;
+    self->total_delta_size += (size_t) num_changes;
 out:
     return ret;
 }
@@ -1868,11 +1886,6 @@ tsls_hmm_same_rates(const tsls_hmm_t *self, tsk_id_t site)
            && self->index->num_alleles[site] == self->index->num_alleles[site - 1];
 }
 
-/* The fewest sites in a tree that could be sparse for numbering the tree
- * to be worthwhile */
-#ifndef SPARSE_MIN_SITES
-#define SPARSE_MIN_SITES 4
-#endif
 
 /* The most mutations at a site that a sparse site handles */
 #define SPARSE_MAX_MUTATIONS 64
@@ -2315,7 +2328,7 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
             }
             /* Numbering costs about as much as a site processed in full,
              * so only number trees with enough sites that can be sparse */
-            if (!self->tree_numbered && num_sparse_candidates >= SPARSE_MIN_SITES) {
+            if (!self->tree_numbered && num_sparse_candidates >= self->index_min_sites) {
                 tsls_hmm_number_tree(self, site);
             }
         }
@@ -2496,6 +2509,7 @@ tsls_hmm_reset_traceback(tsls_hmm_t *self)
         tsi_blkalloc_reset(&self->traceback_allocator);
     }
     self->total_traceback_size = 0;
+    self->total_delta_size = 0;
     self->total_distinct_values = 0;
     self->num_sparse_sites = 0;
 out:
@@ -2606,6 +2620,15 @@ tsls_hmm_get_mean_traceback_size(tsls_hmm_t *self)
         return 0;
     }
     return (double) self->total_traceback_size / ((double) self->num_sites);
+}
+
+double
+tsls_hmm_get_mean_delta_size(const tsls_hmm_t *self)
+{
+    if (self->stats_num_sites == 0) {
+        return 0;
+    }
+    return (double) self->total_delta_size / (double) self->stats_num_sites;
 }
 
 double

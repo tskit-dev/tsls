@@ -142,14 +142,19 @@ typedef struct {
      * if it is not in the traceback's set */
     int8_t traceback_flag;
     /* The walks up the tree to the nearest node with a likelihood are
-     * cached (see tsls_hmm_find_listed). A node whose cache_stamp equals the
-     * HMM's is either a node with a likelihood, whose listed_ancestor is
-     * itself, or a node without one whose listed_ancestor leads, by
-     * following listed_ancestor, to its nearest ancestor with a likelihood.
-     * Nodes with likelihoods always have the current stamp. */
+     * cached (see tsls_hmm_find_listed). A node with a likelihood has
+     * cache_stamp TSLS_LISTED_STAMP, the largest value. An unlisted node
+     * whose cache_stamp equals the HMM's has a listed_ancestor that leads,
+     * by following listed_ancestor through unlisted nodes, to its nearest
+     * ancestor with a likelihood. Stale stamps are smaller than the HMM's,
+     * so a walk stops at the first node with cache_stamp >= the HMM's, and
+     * incrementing the HMM's stamp clears every cache. */
     uint32_t cache_stamp;
     tsk_id_t listed_ancestor;
 } tsls_node_t;
+
+/* The cache_stamp of a node with a likelihood (see tsls_node_t) */
+#define TSLS_LISTED_STAMP UINT32_MAX
 
 /* A node's likelihood. */
 typedef struct {
@@ -220,6 +225,9 @@ typedef struct {
      * range [preorder[u], subtree_end[u]), and the likelihood list is kept
      * sorted by preorder. */
     bool tree_numbered;
+    /* A tree is numbered for sparse sites if at least this many of its
+     * remaining sites could be sparse */
+    int index_min_sites;
     tsk_id_t tree_end_site;
     int32_t num_numbered;
     int32_t *preorder;
@@ -247,6 +255,8 @@ typedef struct {
     size_t site_num_updated;
     tsi_blkalloc_t traceback_allocator;
     size_t total_traceback_size;
+    /* The total number of entries in the traceback deltas */
+    size_t total_delta_size;
     /* The total number of distinct likelihood values over sites, if
      * TSLS_COUNT_DISTINCT is set. */
     size_t total_distinct_values;
@@ -270,6 +280,7 @@ int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     double likelihood_threshold, int flags);
 int tsls_hmm_set_relative_prune_threshold(tsls_hmm_t *self, double threshold);
 int tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold);
+int tsls_hmm_set_index_min_sites(tsls_hmm_t *self, int min_sites);
 int tsls_hmm_free(tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_values(const tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_updated(const tsls_hmm_t *self);
@@ -286,6 +297,7 @@ int tsls_hmm_backward(tsls_hmm_t *self, const allele_t *haplotype,
     const double *forward_normalisation_factor, compressed_matrix_t *output);
 int tsls_hmm_print_state(tsls_hmm_t *self, FILE *out);
 double tsls_hmm_get_mean_traceback_size(tsls_hmm_t *self);
+double tsls_hmm_get_mean_delta_size(const tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_distinct_values(tsls_hmm_t *self);
 size_t tsls_hmm_get_total_memory(tsls_hmm_t *self);
 
