@@ -134,8 +134,7 @@ tsls_large_free(void *p, size_t size)
 #define MODE_BACKWARD 2
 
 /* The tree is kept as parent links and numbers of children: the walks only
- * go up the tree, and a node is in the tree if it has a parent or a child.
- * Children are only listed when a tree is numbered (tsls_hmm_number_tree). */
+ * go up the tree, and a node is in the tree if it has a parent or a child. */
 static inline void
 remove_edge(
     tsk_id_t p, tsk_id_t c, tsls_node_t *restrict tree, int32_t *restrict num_children)
@@ -611,6 +610,29 @@ tsls_hmm_check_state(const tsls_hmm_t *self)
     }
     assert(num_likelihoods == self->num_likelihood_nodes);
     (void) num_likelihoods;
+    if (self->tree_numbered) {
+        /* The listed nodes are numbered, in order, and each numbered
+         * node's parent is numbered and contains it */
+        for (j = 0; j < self->num_likelihood_nodes; j++) {
+            u = self->likelihood_nodes[j];
+            assert(self->preorder[u] >= 0);
+            if (j > 0) {
+                assert(self->preorder[self->likelihood_nodes[j - 1]]
+                       < self->preorder[u]);
+            }
+        }
+        for (j = 0; j < self->num_numbered; j++) {
+            u = self->children[j];
+            v = self->tree[u].parent;
+            assert(self->preorder[u] >= 0 && self->preorder[u] < self->num_numbered);
+            assert(self->subtree_end[u] > self->preorder[u]
+                   && self->subtree_end[u] <= self->num_numbered);
+            if (v != NULL_NODE) {
+                assert(self->preorder[v] < self->preorder[u]
+                       && self->subtree_end[u] <= self->subtree_end[v]);
+            }
+        }
+    }
 }
 
 int
@@ -1139,6 +1161,8 @@ tsls_hmm_update_tree(tsls_hmm_t *self, const tsk_tree_position_t *tp)
     tsk_id_t j, u;
     int k, num_left, num_isolated = 0;
 
+    /* The numbering is for one tree (see tsls_hmm_number_tree) */
+    self->tree_numbered = false;
     for (j = tp->out.start; j != tp->out.stop; j += direction) {
         tsls_hmm_remove_edge(
             self, out[j].parent, out[j].child, true, isolated, &num_isolated);
@@ -1188,9 +1212,11 @@ tsls_hmm_init_sweep(
         self->tree[k].recombination_required = -1;
         self->tree[k].traceback_flag = -1;
         self->num_below[k] = 1;
+        self->preorder[k] = -1;
     }
     self->cache_stamp = 1;
     self->tree_numbered = false;
+    self->num_numbered = 0;
     self->all_changed = true;
     self->num_changed = 0;
     self->num_removed_nodes = 0;
@@ -1218,73 +1244,108 @@ out:
     return ret;
 }
 
-/* Number the nodes of the current tree in preorder, and sort the
- * likelihood list by preorder (see tsls_hmm_t). */
-static void
-tsls_hmm_number_tree(tsls_hmm_t *self)
+/* Add u and its ancestors to the nodes to be numbered, stopping at the
+ * first that is already there (see tsls_hmm_number_tree). */
+static inline void
+tsls_hmm_add_root_path(tsls_hmm_t *self, tsk_id_t u, int32_t *num_nodes)
 {
-    const tsk_id_t N = (tsk_id_t) self->num_nodes;
     const tsls_node_t *restrict tree = self->tree;
-    const int32_t *restrict num_children = self->num_children;
-    int32_t *restrict child_offset = self->child_offset;
-    tsk_id_t *restrict children = self->children;
+    int32_t *restrict preorder = self->preorder;
+    tsk_id_t *restrict nodes = self->children;
+    tsk_id_t *restrict first_child = self->child_offset;
+
+    while (u != NULL_NODE && preorder[u] == -1) {
+        preorder[u] = -2;
+        first_child[u] = NULL_NODE;
+        nodes[*num_nodes] = u;
+        (*num_nodes)++;
+        u = tree[u].parent;
+    }
+}
+
+/* Number the nodes of the current tree that sparse sites need in preorder,
+ * and sort the likelihood list by preorder (see tsls_hmm_t).
+ *
+ * Sparse sites need the positions of the listed nodes, the nodes with
+ * mutations at the remaining sites in the tree, and the parents of those
+ * nodes; while the tree is numbered, only nodes with mutations at these
+ * sites join the list. Numbering the union of these nodes' paths to the
+ * root in preorder gives the same order and ancestry for them as numbering
+ * the whole tree, at a cost in proportion to the union rather than to all
+ * the nodes. */
+static void
+tsls_hmm_number_tree(tsls_hmm_t *self, tsk_id_t site)
+{
+    const tsls_index_t *index = self->index;
+    const tsls_node_t *restrict tree = self->tree;
     const tsls_likelihood_t *restrict L = self->likelihood;
     int32_t *restrict preorder = self->preorder;
     int32_t *restrict subtree_end = self->subtree_end;
     tsk_id_t *restrict L_nodes = self->likelihood_nodes;
+    /* The nodes numbered, kept so that the next numbering can unset them */
+    tsk_id_t *restrict nodes = self->children;
+    tsk_id_t *restrict first_child = self->child_offset;
+    /* The next sibling of each node, overwritten as the node is left */
+    tsk_id_t *restrict next_sibling = subtree_end;
     tsk_id_t *restrict order = self->likelihood_nodes_tmp;
-    /* The position in each node's children of the next child to visit */
-    int32_t *restrict next_child = subtree_end;
-    tsk_id_t root, u, p;
-    int32_t k, j, total;
+    const tsk_size_t mutations_stop
+        = index->site_mutations_offset[self->tree_end_site];
+    tsk_id_t root, u, p, s;
+    tsk_size_t i;
+    int32_t num_nodes, j, k;
     int n;
 
-    /* List the children of each node, in order of node ID */
-    total = 0;
-    for (u = 0; u < N; u++) {
-        child_offset[u] = total;
-        next_child[u] = total;
-        total += num_children[u];
+    for (j = 0; j < self->num_numbered; j++) {
+        preorder[nodes[j]] = -1;
     }
-    child_offset[N] = total;
-    for (u = 0; u < N; u++) {
+    num_nodes = 0;
+    for (j = 0; j < self->num_likelihood_nodes; j++) {
+        tsls_hmm_add_root_path(self, L_nodes[j], &num_nodes);
+    }
+    for (i = index->site_mutations_offset[site]; i < mutations_stop; i++) {
+        u = index->mutation_node[i];
+        if (tsls_hmm_in_tree(self, u)) {
+            tsls_hmm_add_root_path(self, u, &num_nodes);
+        }
+    }
+    for (j = 0; j < num_nodes; j++) {
+        u = nodes[j];
         p = tree[u].parent;
         if (p != NULL_NODE) {
-            children[next_child[p]] = u;
-            next_child[p]++;
+            next_sibling[u] = first_child[p];
+            first_child[p] = u;
         }
-        preorder[u] = -1;
-    }
-    for (u = 0; u < N; u++) {
-        next_child[u] = child_offset[u];
     }
     k = 0;
-    for (root = 0; root < N; root++) {
-        if (tree[root].parent != NULL_NODE || num_children[root] == 0) {
+    for (j = 0; j < num_nodes; j++) {
+        root = nodes[j];
+        if (tree[root].parent != NULL_NODE) {
             continue;
         }
-        preorder[root] = k;
-        order[k] = root;
-        k++;
         u = root;
         while (true) {
-            if (next_child[u] < child_offset[u + 1]) {
-                /* Visit u's next child */
-                u = children[next_child[u]++];
-                preorder[u] = k;
-                order[k] = u;
-                k++;
-            } else {
-                /* Leave u, whose subtree has been visited (this overwrites
-                 * u's next_child, which is no longer needed) */
+            preorder[u] = k;
+            order[k] = u;
+            k++;
+            if (first_child[u] != NULL_NODE) {
+                u = first_child[u];
+                continue;
+            }
+            /* Leave u and the ancestors whose last child it is */
+            while (u != root && next_sibling[u] == NULL_NODE) {
                 subtree_end[u] = k;
-                if (u == root) {
-                    break;
-                }
                 u = tree[u].parent;
             }
+            if (u == root) {
+                subtree_end[u] = k;
+                break;
+            }
+            s = next_sibling[u];
+            subtree_end[u] = k;
+            u = s;
         }
     }
+    assert(k == num_nodes);
     n = 0;
     for (j = 0; j < k; j++) {
         u = order[j];
@@ -1797,6 +1858,22 @@ out:
     return ret;
 }
 
+/* Whether a site has the same rates and number of alleles as the previous
+ * site, as a sparse site needs */
+static inline bool
+tsls_hmm_same_rates(const tsls_hmm_t *self, tsk_id_t site)
+{
+    return self->recombination_rate[site] == self->recombination_rate[site - 1]
+           && self->mismatch_rate[site] == self->mismatch_rate[site - 1]
+           && self->index->num_alleles[site] == self->index->num_alleles[site - 1];
+}
+
+/* The fewest sites in a tree that could be sparse for numbering the tree
+ * to be worthwhile */
+#ifndef SPARSE_MIN_SITES
+#define SPARSE_MIN_SITES 4
+#endif
+
 /* The most mutations at a site that a sparse site handles */
 #define SPARSE_MAX_MUTATIONS 64
 
@@ -2177,6 +2254,7 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
                         && !(self->flags & (TSLS_DISABLE_SPARSE | TSLS_COUNT_DISTINCT))
                         && self->relative_prune_threshold == 0;
     tsk_id_t site, first_site;
+    int num_sparse_candidates = 0;
     double previous_total = -1;
     bool valid, new_tree;
     int handled;
@@ -2221,34 +2299,30 @@ tsls_hmm_run(tsls_hmm_t *self, int mode, tsk_id_t start, tsk_id_t end,
             if (new_tree) {
                 /* Nodes may have entered or left the tree, so process this
                  * site in full */
-                self->tree_numbered = false;
                 self->all_changed = true;
                 /* Scan forward rather than binary search: trees often span
                  * only a site or two, so the scans add up to a pass over
                  * the sites, where the searches missed the cache. */
                 self->tree_end_site = site + 1;
+                num_sparse_candidates = 0;
                 while (self->tree_end_site < end
                        && position[self->tree_end_site] < tp.interval.right) {
+                    num_sparse_candidates
+                        += tsls_hmm_same_rates(self, self->tree_end_site);
                     self->tree_end_site++;
                 }
                 new_tree = false;
             }
-            /* Numbering the tree takes about as long as processing a site
-             * in full for every node, so do it once the list is long
-             * enough for the remaining sites in the tree. */
-            if (!self->tree_numbered
-                && (double) (self->tree_end_site - site)
-                           * (double) self->num_likelihood_nodes
-                       >= (double) self->num_nodes) {
-                tsls_hmm_number_tree(self);
+            /* Numbering costs about as much as a site processed in full,
+             * so only number trees with enough sites that can be sparse */
+            if (!self->tree_numbered && num_sparse_candidates >= SPARSE_MIN_SITES) {
+                tsls_hmm_number_tree(self, site);
             }
         }
         if (mode == MODE_VITERBI) {
             handled = 0;
             if (sparse && self->tree_numbered && !self->all_changed && site > start
-                && self->recombination_rate[site] == self->recombination_rate[site - 1]
-                && self->mismatch_rate[site] == self->mismatch_rate[site - 1]
-                && self->index->num_alleles[site] == self->index->num_alleles[site - 1]) {
+                && tsls_hmm_same_rates(self, site)) {
                 handled = tsls_hmm_process_site_sparse(self, site, haplotype[site]);
             }
             if (handled < 0) {

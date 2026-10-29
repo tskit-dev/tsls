@@ -191,9 +191,8 @@ typedef struct {
     uint32_t cache_stamp;
     /* The number of children of each node in the current tree */
     int32_t *num_children;
-    /* The children of each node, as ranges child_offset[u] to
-     * child_offset[u + 1] of children, built when a tree is numbered (see
-     * tsls_hmm_number_tree) */
+    /* Workspace for tsls_hmm_number_tree: children holds the nodes
+     * numbered, and child_offset each node's first child while numbering */
     int32_t *child_offset;
     tsk_id_t *children;
     /* The number of nodes in the subtree below each node, including itself.
@@ -216,7 +215,8 @@ typedef struct {
     int num_removed_nodes;
     /* Sparse Viterbi (see tsls_hmm_process_site_sparse). When the tree is
      * numbered, preorder[u] is the position of u in a preorder traversal
-     * of the tree (-1 if u is not in the tree), the subtree of u is the
+     * of the part of the tree that sparse sites need (-1 for other nodes;
+     * see tsls_hmm_number_tree), the numbered nodes in u's subtree are the
      * range [preorder[u], subtree_end[u]), and the likelihood list is kept
      * sorted by preorder. */
     bool tree_numbered;
