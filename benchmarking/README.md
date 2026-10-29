@@ -853,3 +853,28 @@ constant r.
   and fusing traceback storage into the site update (~5%).
 - Approximations were not needed; earlier thresholding and coarsening
   work found them costly in accuracy for little time.
+
+### Against tsinfer-hmm after the walk caches
+
+Two full rounds of `paired.py` (`9b0112b`, pinned to one core with
+`taskset`, best of 3 per query), tsls / tsinfer-hmm. `samples_map` and
+`samples_map_mu1e-8` are the 6 samples under the HapMap II chr20 map.
+
+| workload | queries | round 1 | round 2 | memory (MiB), tsls / tsinfer-hmm | paths same/tie/better/worse |
+|---|---|---|---|---|---|
+| ancestors, group 84 | 50 | 0.64 | 0.67 | 4 / 64 | 50/0/0/0 |
+| ancestors, group 1000 | 50 | 0.51 | 0.52 | 4 / 64 | 50/0/0/0 |
+| ancestors, group 1483 | 100 | 0.46 | 0.49 | 4 / 64 | 100/0/0/0 |
+| ancestors, group 1484 | 50 | 0.39 | 0.47 | 8 / 64 | 50/0/0/0 |
+| ancestors, group 1485 | 100 | 0.51 | 0.50 | 4 / 64 | 100/0/0/0 |
+| samples, constant r | 6 | 0.30 | 0.30 | 12 / 128 | 6/0/0/0 |
+| samples, map, mu = 1e-20 | 6 | 0.16 | 0.17 | 36 / 384 | 6/0/0/0 |
+| samples, map, mu = 1e-8 | 6 | 0.17 | 0.16 | 40 / 448 | 6/0/0/0 |
+| sc2ts 100k, k = 1 | 10 | 0.018 | 0.018 | 4 / 640 | 4/2/3/1 |
+| sc2ts 100k, exact | 10 | 0.013 | 0.013 | 4 / 960 | 8/2/0/0 |
+| sc2ts 300k, exact | 4 | 0.044 | 0.043 | 4 / 1,792 | 3/1/0/0 |
+
+A chr20p sample takes about 0.8 s with tsls against 2.7 s with
+tsinfer-hmm under constant r, and 1.7-1.9 s against 10-12 s under the
+map. The one worse sc2ts k = 1 path is the tie in floored values
+described in `c81ac3b`.
