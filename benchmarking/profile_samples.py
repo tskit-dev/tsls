@@ -85,6 +85,7 @@ def main(genetic_map, mu, query_ids, missing, repeats):
                 "mean_values": round(hmm.mean_num_values, 1),
                 "traceback": round(hmm.mean_traceback_size, 1),
                 "delta": round(getattr(hmm, "mean_delta_size", float("nan")), 2),
+                "memory_mib": round(hmm.total_memory / 2**20, 1),
             }
             counts = getattr(hmm, "step_counts", None)
             if counts is not None:

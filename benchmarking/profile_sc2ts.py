@@ -91,6 +91,7 @@ def main(ts_path, mismatch_threshold, query_ids, sparse, repeats):
                 "mean_values": round(hmm.mean_num_values, 1),
                 "updated": round(hmm.mean_num_updated, 1),
                 "delta": round(getattr(hmm, "mean_delta_size", float("nan")), 2),
+                "memory_mib": round(hmm.total_memory / 2**20, 1),
             }
             print(json.dumps(row), flush=True)
 
