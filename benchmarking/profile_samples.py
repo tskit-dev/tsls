@@ -39,7 +39,8 @@ def load_reference(path):
 @click.option("--queries", "query_ids", default="0,40,80,120,160,199")
 @click.option("--missing", is_flag=True, help="Use all-missing haplotypes")
 @click.option("--repeats", type=int, default=1)
-def main(genetic_map, mu, query_ids, missing, repeats):
+@click.option("--index-min-sites", type=int, default=None)
+def main(genetic_map, mu, query_ids, missing, repeats, index_min_sites):
     ts = load_reference(f"{WORKLOAD}/reference.trees")
     H, positions, _ = queries.load_queries(WORKLOAD)
     m = ts.num_sites
@@ -56,7 +57,10 @@ def main(genetic_map, mu, query_ids, missing, repeats):
         if missing:
             h[start:end] = -1
         for _ in range(repeats):
-            hmm = tsls.Hmm(reference, r, np.full(m, mu))
+            kwargs = {}
+            if index_min_sites is not None:
+                kwargs["index_min_sites"] = index_min_sites
+            hmm = tsls.Hmm(reference, r, np.full(m, mu), **kwargs)
             matched = np.zeros(m, dtype=np.int8)
             before = time.perf_counter()
             left, right, parent = hmm.find_path(h, start, end, matched)

@@ -159,12 +159,25 @@ typedef struct {
      * cache_stamp TSLS_LISTED_STAMP, the largest value. An unlisted node
      * whose cache_stamp equals the HMM's has a listed_ancestor that leads,
      * by following listed_ancestor through unlisted nodes, to its nearest
-     * ancestor with a likelihood. Stale stamps are smaller than the HMM's,
+     * ancestor with a likelihood, and every node between them on the path
+     * has the current stamp too, so that listing one of them clears the
+     * caches (see tsls_hmm_mark_listed). Stale stamps are smaller than the
+     * HMM's,
      * so a walk stops at the first node with cache_stamp >= the HMM's, and
      * incrementing the HMM's stamp clears every cache. */
     uint32_t cache_stamp;
     tsk_id_t listed_ancestor;
 } tsls_node_t;
+
+/* The mutations on a node at a site, as a range of preorder positions in
+ * an indexed tree, with the mutation's derived state and its position in
+ * the site's mutations (later mutations on the same node win). */
+typedef struct {
+    int32_t start;
+    int32_t end;
+    int32_t order;
+    allele_t state;
+} mutation_range_t;
 
 /* The cache_stamp of a node with a likelihood (see tsls_node_t) */
 #define TSLS_LISTED_STAMP UINT32_MAX
@@ -250,6 +263,10 @@ typedef struct {
     tsk_id_t last_site;
     /* The end of the window of sites being processed */
     tsk_id_t end_site;
+    /* At the current site, the next site's ceiling if nodes that cost at
+     * least that are treated as equivalent (see
+     * tsls_hmm_equivalent_costs), and infinity otherwise */
+    double dead_cost;
     /* The cost above the best at which a node is pruned, and the cost of
      * likelihood_threshold above the best (infinite if they are 0) */
     double prune_cost;
@@ -267,9 +284,46 @@ typedef struct {
     int delta_num_transition;
     uint32_t *stamp;
     uint32_t current_stamp;
-    /* A tree is numbered for sparse sites if at least this many of its
-     * remaining sites could be sparse (unused for now) */
+    /* Indexed trees (see tsls_hmm_number_tree and
+     * tsls_hmm_process_site_indexed). A tree is numbered if it has at least
+     * index_min_sites sites left. Then preorder[u] is the position of u in
+     * a preorder traversal of the part of the tree that the sites need (-1
+     * for other nodes), the numbered nodes in u's subtree are the range
+     * [preorder[u], subtree_end[u]), preorder_node is the inverse, and
+     * listed_bits marks the positions of the listed nodes. numbered lists
+     * the numbered nodes, so that the next numbering can unset them, and
+     * first_child is workspace. Each remaining site's mutations, as
+     * preorder ranges, are sorted in ranges[range_offset[site]] to
+     * ranges[range_offset[site + 1]], and a site's alleles are found as
+     * segments of the preorder positions. */
+    bool tree_numbered;
+    tsk_id_t tree_end_site;
     int index_min_sites;
+    int32_t num_numbered;
+    int32_t *preorder;
+    int32_t *subtree_end;
+    tsk_id_t *preorder_node;
+    tsk_id_t *numbered;
+    tsk_id_t *first_child;
+    uint64_t *listed_bits;
+    /* The position of each listed node in likelihood_nodes */
+    int32_t *list_position;
+    mutation_range_t *ranges;
+    size_t max_ranges;
+    int32_t *range_offset;
+    int32_t *range_stack;
+    int32_t *segment_start;
+    allele_t *segment_allele;
+    /* The nodes touched at the current and previous indexed sites, which
+     * are coalesced, and the list's length after the last compaction */
+    tsk_id_t *touched;
+    tsk_id_t *prev_touched;
+    int num_touched;
+    int num_prev_touched;
+    int compact_size;
+    /* Whether current may be out of date for some listed nodes (it is only
+     * kept up to date for the nodes that indexed sites touch) */
+    bool currents_stale;
     size_t num_sparse_sites;
     /* Statistics of the last run: over the sites processed, the total and
      * maximum length of the likelihood list after each site, and the total

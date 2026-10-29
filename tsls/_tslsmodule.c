@@ -230,7 +230,7 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     double relative_prune_threshold = 0;
     int count_distinct = 0;
     int sparse = 1;
-    int index_min_sites = 4;
+    int index_min_sites = 16;
     static char *kwlist[] = { "tree_sequence", "recombination", "mismatch",
         "extended_checks", "likelihood_threshold", "prune_threshold",
         "relative_prune_threshold", "count_distinct", "sparse", "index_min_sites",

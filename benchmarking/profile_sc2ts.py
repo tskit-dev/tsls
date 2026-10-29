@@ -28,7 +28,8 @@ import paired
 @click.option("--queries", "query_ids", default=None)
 @click.option("--sparse/--no-sparse", default=True)
 @click.option("--repeats", type=int, default=1)
-def main(ts_path, mismatch_threshold, query_ids, sparse, repeats):
+@click.option("--index-min-sites", type=int, default=None)
+def main(ts_path, mismatch_threshold, query_ids, sparse, repeats, index_min_sites):
     path = pathlib.Path(ts_path)
     workload = paired.Workload(
         "sc2ts",
@@ -55,12 +56,16 @@ def main(ts_path, mismatch_threshold, query_ids, sparse, repeats):
         h = H[qid].astype(np.int8)
         start, end = paired.queries.query_window(H, qid)
         for _ in range(repeats):
-            hmm = engine.make_matcher() if sparse else engines.tsls.Hmm(
+            kwargs = {}
+            if index_min_sites is not None:
+                kwargs["index_min_sites"] = index_min_sites
+            hmm = engines.tsls.Hmm(
                 engine.reference,
                 engine.recombination,
                 engine.mismatch,
                 prune_threshold=engine.prune_threshold,
-                sparse=False,
+                sparse=sparse,
+                **kwargs,
             )
             matched = np.zeros(ts.num_sites, dtype=np.int8)
             before = time.perf_counter()

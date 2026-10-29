@@ -43,11 +43,15 @@ def run_build(path, script, args, core):
     help="Time sc2ts queries against this ARG (profile_sc2ts.py) instead",
 )
 @click.option("--k", "mismatch_threshold", type=int, default=None)
+@click.option("--index-min-sites", type=int, default=None)
 @click.option("--mu", type=float, default=1e-20)
 @click.option("--queries", "query_ids", default=None)
 @click.option("-r", "--rounds", type=int, default=3)
 @click.option("--core", type=int, default=2)
-def main(builds, genetic_map, sc2ts_path, mismatch_threshold, mu, query_ids, rounds, core):
+def main(
+    builds, genetic_map, sc2ts_path, mismatch_threshold, index_min_sites, mu, query_ids,
+    rounds, core
+):
     named = [b.split("=", 1) for b in builds]
     if sc2ts_path is None:
         script = "profile_samples.py"
@@ -61,6 +65,8 @@ def main(builds, genetic_map, sc2ts_path, mismatch_threshold, mu, query_ids, rou
             args += ["--queries", query_ids]
         if mismatch_threshold is not None:
             args += ["--k", str(mismatch_threshold)]
+    if index_min_sites is not None:
+        args += ["--index-min-sites", str(index_min_sites)]
     best = collections.defaultdict(dict)
     paths = collections.defaultdict(dict)
     log_likelihoods = collections.defaultdict(dict)

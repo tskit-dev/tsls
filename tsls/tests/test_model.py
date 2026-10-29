@@ -225,8 +225,7 @@ class TestPruneThreshold:
             value = dense.path_log_likelihood(*args, path)
             assert value == pytest.approx(optimum, rel=1e-9)
         if sparse and num_trees_hint == 0:
-            # Sparse sites are being reimplemented (see test_matching.SPARSE_SITES)
-            assert num_sparse_sites >= 0
+            assert num_sparse_sites > 0
 
     @pytest.mark.parametrize("seed", range(6))
     @pytest.mark.parametrize("sparse", [True, False])
