@@ -30,8 +30,7 @@
 #define NULL_LIKELIHOOD (-1)
 #define NOT_IN_TREE     (-2)
 
-#define NULL_NODE   (-1)
-#define CACHE_UNSET (-1)
+#define NULL_NODE (-1)
 
 /* Matcher flags */
 #define TSLS_EXTENDED_CHECKS     (1 << 0)
@@ -130,27 +129,37 @@ typedef struct {
 } tsls_index_t;
 
 /* The state of a node that the walks up the tree read, kept together (in
- * 8 bytes) so that each step of a walk reads one record. */
+ * 16 bytes, so that records don't straddle cache lines) so that each step
+ * of a walk reads one record. */
 typedef struct {
     tsk_id_t parent;
     /* The allelic state at the current site, if the node has a mutation
      * there (or is a root, during the sweeps) */
     allele_t allelic_state;
     int8_t recombination_required;
-    /* The recombination_required flag inherited by the node, valid where
-     * the likelihood cache is set. Only filled when coalescing Viterbi. */
-    int8_t recombination_required_cache;
+    int8_t unused;
     /* The node's flag in the traceback as of the last site stored, or -1
      * if it is not in the traceback's set */
     int8_t traceback_flag;
+    /* The walks up the tree to the nearest node with a likelihood are
+     * cached (see tsls_hmm_find_listed). A node whose cache_stamp equals the
+     * HMM's is either a node with a likelihood, whose listed_ancestor is
+     * itself, or a node without one whose listed_ancestor leads, by
+     * following listed_ancestor, to its nearest ancestor with a likelihood.
+     * Nodes with likelihoods always have the current stamp. */
+    uint32_t cache_stamp;
+    tsk_id_t listed_ancestor;
 } tsls_node_t;
 
-/* A node's likelihood, with the cache used when coalescing. */
+/* A node's likelihood. */
 typedef struct {
     /* The node's likelihood, or NULL_LIKELIHOOD or NOT_IN_TREE */
     double value;
-    /* The likelihood the node inherits, cached during coalescing */
-    double cache;
+    /* For a node with a likelihood, in Viterbi, its nearest proper ancestor
+     * with a likelihood (NULL_NODE for a root), set at the start of each
+     * site (see tsls_hmm_set_listed_ancestors) */
+    tsk_id_t ancestor;
+    int32_t unused;
 } tsls_likelihood_t;
 
 /* The Li and Stephens HMM on a tree sequence. The index is borrowed, and
@@ -174,14 +183,19 @@ typedef struct {
     double prune_threshold;
     double *recombination_rate;
     double *mismatch_rate;
-    /* The per-node state, with the parent links of the quintuply linked
-     * tree, which are completed by the arrays below */
+    /* The per-node state, including the tree's parent links */
     tsls_node_t *tree;
     tsls_likelihood_t *likelihood;
-    tsk_id_t *left_child;
-    tsk_id_t *right_child;
-    tsk_id_t *left_sib;
-    tsk_id_t *right_sib;
+    /* The walk caches are valid on nodes whose cache_stamp equals this;
+     * incrementing it clears them all (see tsls_hmm_clear_walk_caches) */
+    uint32_t cache_stamp;
+    /* The number of children of each node in the current tree */
+    int32_t *num_children;
+    /* The children of each node, as ranges child_offset[u] to
+     * child_offset[u + 1] of children, built when a tree is numbered (see
+     * tsls_hmm_number_tree) */
+    int32_t *child_offset;
+    tsk_id_t *children;
     /* The number of nodes in the subtree below each node, including itself.
      * Only maintained for the forward and backward algorithms. */
     int64_t *num_below;

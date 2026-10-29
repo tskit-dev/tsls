@@ -11,7 +11,9 @@ otherwise idle machine.
 There are two kinds of workload:
 
 - tsinfer: the chr20p ancestor groups and samples made by tsinfer_data.py,
-  with the model in their model.json.
+  with the model in their model.json. The "samples_map" workloads replace
+  its constant rho with per-site probabilities from the HapMap II chr20 map
+  (genetic_map.py), and "_mu1e-8" also replaces its mu.
 - sc2ts: queries from data/queries_scaling matched against the sc2ts
   sub-ARGs, with the sc2ts model (num_mismatches = 3, weight_by_n=False).
   sc2ts matches every sample first with a likelihood threshold of k = 0
@@ -32,6 +34,7 @@ import time
 
 import click
 import numpy as np
+import tsls
 
 import callgrind
 import engines
@@ -53,11 +56,18 @@ class Workload:
     # None for tsinfer workloads, which use their model.json
     mismatch_threshold: float = None
     sc2ts: bool = False
+    # A genetic map (relative to the data directory) and mu to use in place
+    # of model.json's rho and mu
+    genetic_map: str = None
+    mu: float = None
 
 
-def tsinfer_workload(name, num_queries):
-    path = f"tgp_chr20p/{name}"
-    return Workload(name, f"{path}/reference.trees", path, num_queries)
+GENETIC_MAP = "genetic_maps/chr20_HapMapII_GRCh38.txt"
+
+
+def tsinfer_workload(name, num_queries, directory=None, **kwargs):
+    path = f"tgp_chr20p/{name if directory is None else directory}"
+    return Workload(name, f"{path}/reference.trees", path, num_queries, **kwargs)
 
 
 def sc2ts_workload(name, num_samples, num_queries, mismatch_threshold=None):
@@ -78,6 +88,10 @@ WORKLOADS = [
     tsinfer_workload("ancestors_g1484", 50),
     tsinfer_workload("ancestors_g1485", 100),
     tsinfer_workload("samples", 6),
+    tsinfer_workload("samples_map", 6, "samples", genetic_map=GENETIC_MAP),
+    tsinfer_workload(
+        "samples_map_mu1e-8", 6, "samples", genetic_map=GENETIC_MAP, mu=1e-8
+    ),
     sc2ts_workload("sc2ts_n100k_k1", 100000, 10, mismatch_threshold=1),
     sc2ts_workload("sc2ts_n100k", 100000, 10),
     sc2ts_workload("sc2ts_n300k", 300000, 4),
@@ -107,6 +121,12 @@ def load_workload(data_dir, workload):
         query_ids = SC2TS_QUERIES[: workload.num_queries]
     else:
         model = queries.load_model(data_dir / workload.query_dir)
+        if workload.genetic_map is not None:
+            model["rho"] = tsls.model.recombination_probabilities(
+                data_dir / workload.genetic_map, ts.sites_position
+            )
+        if workload.mu is not None:
+            model["mu"] = workload.mu
         query_ids = list(df.query_id[: workload.num_queries])
     return ts, H, query_ids, model
 
@@ -130,8 +150,8 @@ def time_workload(data_dir, workload, repeats):
     n = ts.num_nodes if model["weight_by_n"] else 1
     num_alleles = engines.site_num_alleles(ts, model["alleles"])
     rates = {
-        "rho": np.full(ts.num_sites, model["rho"]),
-        "mu": np.full(ts.num_sites, model["mu"]),
+        "rho": np.broadcast_to(model["rho"], ts.num_sites),
+        "mu": np.broadcast_to(model["mu"], ts.num_sites),
     }
     best = {name: np.full(len(query_ids), np.inf) for name in ENGINES}
     max_memory = {name: 0 for name in ENGINES}
