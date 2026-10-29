@@ -162,8 +162,10 @@ with a smaller t. This makes sc2ts's escalation (`mismatch_threshold` = 1,
 then larger) exact. The returned path can be checked without knowing the
 optimum (`test_certificate`).
 
-**Rounding.** Values are renormalised at every site, so they carry a relative
-error of a few ulps per site, about 1e-11 over 30,000 sites.
+**Rounding.** Viterbi works with costs (below), which are sums of the
+per-site switch and mismatch costs. A cost of C carries an absolute error of
+a few ulps of C per site: on a 580,000-site chr20p sample C is about 1e4, so
+the error in a value relative to the best is about 1e-12 per operation.
 `path_threshold` multiplies by `1 - 1e-9` (`THRESHOLD_TOLERANCE`) to absorb
 this.
 
@@ -190,25 +192,54 @@ q = 2.51e-6, so it had no effect at all. At k = 1 and 2 it raised weak nodes
 above q, so its result was not guaranteed to be optimal even when the
 returned path was within budget.
 
-## Pruning in sparse Viterbi sites
+## Deferred Viterbi costs
 
-The prune is applied as each value is normalised, in both the full and the
-sparse site updates. This is the same function of the value at every site
-with the same rates, which is what sparse sites rely on: a node unchanged
-at the previous site, and that matches at both, is unchanged. A pruned node
-gets a new value, and so is recomputed at the next site. So, unlike
-`relative_prune_threshold`, `prune_threshold` keeps sparse sites.
+The engine stores Viterbi values as costs, not as renormalised odds. Write
+c_s(j) = -log q_j and c_m(j) = -log e_j. The cost of node u at site j is
 
-## Later work
+    C_j(u) = min(C_{j-1}(u), ceiling_j) + [u mismatches at j] c_m(j),
+    ceiling_j = C*_{j-1} + c_s(j),
 
-- **Recombination maps.** Per-site r_j already works. The thresholds use the
-  extreme q_j and e_j over the sites, which is conservative when they vary
-  a lot. A per-site cutoff (for example `max(t, q_{j+1})`) is the natural
-  extension. On chr20p with the HapMap II map, the per-site r_j span eight
-  orders of magnitude (3e-12 to 6e-4), so `lossless_threshold` (the minimum
-  q_j) is far below the typical q_j, and a map with zero-rate regions would
-  make it 0 (see benchmarking/README.md, "Recombination maps").
-- **Forward-backward thresholds.** Pruning a node removes its mass, so the
-  forward value is a lower bound on the likelihood. The mass removed at each
-  site bounds the error, which gives a route to thresholds with guaranteed
-  error.
+where C* is the smallest cost, the best node's. Then V_j(u) = exp(-(C_j(u) -
+C*_j)). Costs are absolute, so nothing is renormalised. The flag that says
+the best path into u at j switches is C_{j-1}(u) >= ceiling_j, the same tie
+rule as `p_no_recomb <= p_recomb`. A node whose normalised value is below
+the prune threshold t costs more than C* - log t, and gets the cost of
+likelihood_threshold. The floor caps every cost at C* - log(likelihood_threshold).
+
+**Deferred state.** A node that matches only changes if the ceiling falls
+below its cost. So each listed node keeps a state (C, s): the cost it last
+changed to, at site s. Its cost now is C lowered by the smallest ceiling
+since s, and a stack of the increasing ceilings back from the last site
+answers that by binary search. Only changes other than matching are
+recorded: a mismatch, a prune, the cap, and copying the state of the
+ancestor a node inherits from. This holds for any per-site rates.
+
+**Flags in the traceback.** The recombination flags are not stored. Each
+site stores its ceiling, and the last earlier site with a smaller one
+(pse_j). Node u's cost after site j - 1, given its state (C, s), is at least
+the ceiling iff `C >= ceiling_j and pse_j <= s`. The traceback undoes each
+site's changes to the states, moving right to left, and reads the flag of
+the path's representative this way.
+
+**Sparse sites.** If the best node matches at a site, the best cost is
+unchanged: its own cost is at most the ceiling, and the other costs can only
+rise. So only the listed nodes that mismatch need touching. In a tree with
+enough sites left (`index_min_sites`, 16 by default), the engine numbers the
+part of the tree the sites need in preorder. The listed nodes that
+mismatch are then the listed nodes in the preorder ranges of the site's
+mutations whose alleles differ from the query's. If the best node
+mismatches, the site is processed in full. There is no condition on the
+rates, so maps don't stop sites being sparse.
+
+**Dead costs.** Let D_j = ceiling_{j+1}. A node that costs at least D_j at j,
+whether it mismatches there or not, costs D_j plus its emission at j + 1,
+and has the flag set. So mismatching such a node changes nothing from then
+on, and nodes that both cost at least D_j are equivalent when coalescing.
+The engine uses this unless values are output (`viterbi_matrix`) or
+counted, or `sparse=False`.
+
+Pruning only lowers values. A node's value relative to the best can only
+fall when it is touched, so the prune is applied only to touched nodes, and
+`prune_threshold` and `relative_prune_threshold` both keep sparse sites (in
+Viterbi they are the same prune).

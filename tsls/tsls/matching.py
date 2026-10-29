@@ -179,24 +179,27 @@ class Hmm(_tsls.Hmm):
     nodes less than f times the maximum to likelihood_threshold, in Viterbi,
     forward and backward. This is approximate (pruning relative to the
     switch odds, f = c q with c <= 1, is accurate in practice; see
-    experiments/thresholding), and turns off sparse Viterbi sites. If
-    ``count_distinct``
+    experiments/thresholding); in Viterbi it is the same as a prune
+    threshold of f. If ``count_distinct``
     is True, the mean number of distinct values per site in Viterbi is
     recorded in ``mean_num_distinct_values``.
 
-    By default, Viterbi processes a site sparsely when it can, recomputing
-    only the values that can change there (``num_sparse_sites`` counts these
-    sites in the last run). This finds a path with the same likelihood as
-    processing every site in full (``sparse=False``), but may choose a
-    different path among equally likely ones.
-
-    ``index_min_sites`` (for tuning and tests) is the number of sites a
-    tree must have left for it to be numbered for sparse sites.
+    Viterbi works with costs and keeps each node's cost as of the site it
+    last changed (see docs/likelihood_model.md, "Deferred Viterbi costs").
+    By default, in trees with at least ``index_min_sites`` sites left (16),
+    it processes a site sparsely when the best node matches, touching only
+    the nodes that mismatch (``num_sparse_sites`` counts these sites in the
+    last run); this works with any per-site rates. It also leaves nodes that
+    cost too much to matter at the next site unchanged. This finds a path
+    with the same likelihood as processing every site in full with exact
+    values (``sparse=False``), but may choose a different path among
+    equally likely ones. ``index_min_sites`` is for tuning and tests.
 
     After each run, ``mean_num_values`` and ``max_num_values`` give the
     mean and maximum number of nodes with their own value (the likelihood
-    list) after each site, and ``mean_num_updated`` the mean number of node
-    values computed per site, which is less than the list for sparse sites.
+    list) after each site, ``mean_num_updated`` the mean number of node
+    values computed per site, which is less than the list for sparse sites,
+    and ``mean_delta_size`` the mean number of traceback entries per site.
     """
 
     def __init__(

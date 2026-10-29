@@ -878,3 +878,79 @@ A chr20p sample takes about 0.8 s with tsls against 2.7 s with
 tsinfer-hmm under constant r, and 1.7-1.9 s against 10-12 s under the
 map. The one worse sc2ts k = 1 path is the tie in floored values
 described in `c81ac3b`.
+
+## Deferred Viterbi costs (October 2026)
+
+Sparse sites used to be a second code path. It applied only when the
+site's rates matched the previous site's, all values had been normalised
+by the same factor, the best node matched and there were at most 64
+mutations. So no site could be sparse under a recombination map. On the
+full sc2ts ARG, 31% of sites were processed in full, nearly all because of
+the mutation cap: the ARG has a median of 35 mutations per site and 9,041
+sites with more than 64. Those sites took nearly all of the ~25 s per
+query.
+
+Viterbi now works with costs, and each node keeps the cost it last changed
+to and the site where that happened. Its cost now is that cost, lowered by
+any smaller switching ceiling since. The traceback derives the
+recombination flags from these states and from each site's ceiling. One
+update routine serves every site. In a tree with at least 16 sites left,
+it touches only the listed nodes that mismatch, which are found from the
+mutations' preorder ranges in the numbered part of the tree. Otherwise it
+visits every listed node. Nodes too costly to matter at the next site
+("dead") are left alone. See docs/likelihood_model.md, "Deferred Viterbi
+costs", and the commits `d557198`, `5d84138`, `31dee2d` and `72bd778`.
+
+### Against the previous build
+
+Measured with `ab.py`, best of 2-3, on a busy VM, against `d557198` (the
+old sparse sites):
+
+| workload | time |
+|---|---|
+| sc2ts 100k, exact | 0.43 |
+| sc2ts 100k, k = 1 | 0.39 |
+| sc2ts 300k, exact | 0.24 |
+| full sc2ts ARG, k = 1, 3 queries (one run each) | 5.7, 27.1, 28.3 s -> 2.1, 3.3, 3.0 s |
+| chr20p samples, constant r | ~0.9 |
+| chr20p samples, map | ~0.96 |
+
+- **Full ARG:** 96% of sites are now sparse (28.4k of 29,565), against
+  69%, and about 25-90 nodes are touched per site instead of 1,000-6,000.
+- **Paths:** the same or tied in likelihood.
+- **Traceback entries** are 16 bytes against 5:
+  - samples at constant r: 0.04-0.3 entries per site against about 2, so
+    memory is unchanged (13 MiB);
+  - samples under the map: 4.2-4.5 against about 11, at 40-53 MiB against
+    32-36;
+  - full ARG: about 34 MB of traceback per long query against about 4 MB.
+- **Indexing threshold:** 4, 8 and 16 sites left gave samples 1.15-1.34,
+  1.05 and 1.00 of the unindexed time. tsinfer's trees span at most about
+  20 sites, so 16 indexes almost none of them.
+
+### Against tsinfer-hmm
+
+One full round of `paired.py` (`72bd778`), on a busy VM:
+
+| workload | queries | tsls / tsinfer-hmm | before (`9b0112b`) | memory (MiB), tsls / tsinfer-hmm | paths same/tie/better/worse |
+|---|---|---|---|---|---|
+| ancestors, group 84 | 50 | 0.74 | 0.64-0.67 | 4 / 64 | 49/1/0/0 |
+| ancestors, group 1000 | 50 | 0.62 | 0.51-0.52 | 4 / 64 | 48/2/0/0 |
+| ancestors, group 1483 | 100 | 0.50 | 0.46-0.49 | 9 / 64 | 100/0/0/0 |
+| ancestors, group 1484 | 50 | 0.42 | 0.39-0.47 | 10 / 64 | 49/1/0/0 |
+| ancestors, group 1485 | 100 | 0.51 | 0.50-0.51 | 11 / 64 | 99/1/0/0 |
+| samples, constant r | 6 | 0.34 | 0.30 | 13 / 128 | 6/0/0/0 |
+| samples, map, mu = 1e-20 | 6 | 0.15 | 0.16-0.17 | 53 / 384 | 6/0/0/0 |
+| samples, map, mu = 1e-8 | 6 | 0.14 | 0.16-0.17 | 53 / 448 | 1/5/0/0 |
+| sc2ts 100k, k = 1 | 10 | 0.005 | 0.018 | 4 / 640 | 4/2/3/1 |
+| sc2ts 100k, exact | 10 | 0.004 | 0.013 | 4 / 960 | 8/2/0/0 |
+| sc2ts 300k, exact | 4 | 0.008 | 0.044 | 10 / 1,792 | 3/1/0/0 |
+
+- **sc2ts** is now 125-250 times faster than tsinfer-hmm on the sub-ARGs.
+- **tsinfer paths** can differ from tsinfer-hmm's among paths of equal
+  likelihood, because the arithmetic and the tie-breaking changed.
+- **The worse sc2ts k = 1 path** is the tie in floored values described in
+  `c81ac3b`.
+- **Early ancestor groups** (84 and 1000) look 15-20% slower than before,
+  which may be noise on the busy VM or a per-query cost. Rerun on a quiet
+  machine to tell.
