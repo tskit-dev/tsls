@@ -930,27 +930,34 @@ old sparse sites):
 
 ### Against tsinfer-hmm
 
-One full round of `paired.py` (`72bd778`), on a busy VM:
+Two full rounds of `paired.py` (`72bd778`), the first on a busy VM and the
+second on a quieter one, against the two rounds at `9b0112b`:
 
-| workload | queries | tsls / tsinfer-hmm | before (`9b0112b`) | memory (MiB), tsls / tsinfer-hmm | paths same/tie/better/worse |
-|---|---|---|---|---|---|
-| ancestors, group 84 | 50 | 0.74 | 0.64-0.67 | 4 / 64 | 49/1/0/0 |
-| ancestors, group 1000 | 50 | 0.62 | 0.51-0.52 | 4 / 64 | 48/2/0/0 |
-| ancestors, group 1483 | 100 | 0.50 | 0.46-0.49 | 9 / 64 | 100/0/0/0 |
-| ancestors, group 1484 | 50 | 0.42 | 0.39-0.47 | 10 / 64 | 49/1/0/0 |
-| ancestors, group 1485 | 100 | 0.51 | 0.50-0.51 | 11 / 64 | 99/1/0/0 |
-| samples, constant r | 6 | 0.34 | 0.30 | 13 / 128 | 6/0/0/0 |
-| samples, map, mu = 1e-20 | 6 | 0.15 | 0.16-0.17 | 53 / 384 | 6/0/0/0 |
-| samples, map, mu = 1e-8 | 6 | 0.14 | 0.16-0.17 | 53 / 448 | 1/5/0/0 |
-| sc2ts 100k, k = 1 | 10 | 0.005 | 0.018 | 4 / 640 | 4/2/3/1 |
-| sc2ts 100k, exact | 10 | 0.004 | 0.013 | 4 / 960 | 8/2/0/0 |
-| sc2ts 300k, exact | 4 | 0.008 | 0.044 | 10 / 1,792 | 3/1/0/0 |
+| workload | queries | round 1 | round 2 | before (`9b0112b`) | memory (MiB), tsls / tsinfer-hmm | paths same/tie/better/worse |
+|---|---|---|---|---|---|---|
+| ancestors, group 84 | 50 | 0.74 | 0.75 | 0.64-0.67 | 4 / 64 | 49/1/0/0 |
+| ancestors, group 1000 | 50 | 0.62 | 0.63 | 0.51-0.52 | 4 / 64 | 48/2/0/0 |
+| ancestors, group 1483 | 100 | 0.50 | 0.53 | 0.46-0.49 | 9 / 64 | 100/0/0/0 |
+| ancestors, group 1484 | 50 | 0.42 | 0.51 | 0.39-0.47 | 10 / 64 | 49/1/0/0 |
+| ancestors, group 1485 | 100 | 0.51 | 0.53 | 0.50-0.51 | 11 / 64 | 99/1/0/0 |
+| samples, constant r | 6 | 0.34 | 0.34 | 0.30 | 13 / 128 | 6/0/0/0 |
+| samples, map, mu = 1e-20 | 6 | 0.15 | 0.17 | 0.16-0.17 | 53 / 384 | 6/0/0/0 |
+| samples, map, mu = 1e-8 | 6 | 0.14 | 0.16 | 0.16-0.17 | 53 / 448 | 1/5/0/0 |
+| sc2ts 100k, k = 1 | 10 | 0.005 | 0.005 | 0.018 | 4 / 640 | 4/2/3/1 |
+| sc2ts 100k, exact | 10 | 0.004 | 0.004 | 0.013 | 4 / 960 | 8/2/0/0 |
+| sc2ts 300k, exact | 4 | 0.008 | 0.007 | 0.044 | 10 / 1,792 | 3/1/0/0 |
+
+(Path classes were the same in both rounds.)
 
 - **sc2ts** is now 125-250 times faster than tsinfer-hmm on the sub-ARGs.
 - **tsinfer paths** can differ from tsinfer-hmm's among paths of equal
   likelihood, because the arithmetic and the tie-breaking changed.
 - **The worse sc2ts k = 1 path** is the tie in floored values described in
   `c81ac3b`.
-- **Early ancestor groups** (84 and 1000) look 15-20% slower than before,
-  which may be noise on the busy VM or a per-query cost. Rerun on a quiet
-  machine to tell.
+- **Early ancestor groups** (84 and 1000, about 1,400 and 3,000 sites per
+  query) are 15-20% slower against tsinfer-hmm in both rounds, so it isn't
+  noise. The later groups and samples are within about 10% of `9b0112b`,
+  and `ab.py` put samples at 0.9-0.98 of the previous build. These queries
+  take a few milliseconds, so this is probably a cost per query or per
+  window (for example the per-window cost computation, or the extra arrays
+  that each sweep resets) rather than per site. That is not yet profiled.
