@@ -1,0 +1,9 @@
+{
+  "description": "The 2000 oldest samples of the sc2ts ARG (ACGT sites only), with copy and recombinant queries of its samples, and sc2ts's model for k = 3 mismatches per recombination.",
+  "alleles": [
+    "A",
+    "C",
+    "G",
+    "T"
+  ]
+}
