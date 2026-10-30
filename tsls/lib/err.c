@@ -45,6 +45,9 @@ tsls_strerror(int err)
         case TSLS_ERR_BAD_PRUNING:
             ret = "Bad pruning: prune thresholds must be in [0, 1]";
             break;
+        case TSLS_ERR_BAD_PARAM_VALUE:
+            ret = "Bad parameter value";
+            break;
     }
     return ret;
 }

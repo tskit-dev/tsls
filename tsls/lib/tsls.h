@@ -63,16 +63,29 @@ extern int tsi_blkalloc_init(tsi_blkalloc_t *self, size_t chunk_size);
 extern void *tsi_blkalloc_get(tsi_blkalloc_t *self, size_t size);
 extern void tsi_blkalloc_free(tsi_blkalloc_t *self);
 
-/* The changes to the Viterbi traceback at a site: the traceback at a site
- * is a set of (node, recombination_required) pairs, and a node in the tree
- * takes the flag of its nearest ancestor in the set. We store, for each
- * node whose flag changed (or that entered or left the set) at this site,
- * its flag at the previous site (-1 if it was not in the set), so that the
- * traceback can undo the changes moving right to left. */
+/* A node's Viterbi state before a change (see traceback_delta_t): its
+ * cost and the site of its last change, and whether it was listed (the
+ * TSLS_DELTA_LISTED bit of node). */
 typedef struct {
+    uint32_t node;
+    int32_t site;
+    double cost;
+} traceback_entry_t;
+
+#define TSLS_DELTA_LISTED (1u << 31)
+
+/* The changes to the Viterbi state at a site, so that the traceback can
+ * undo them moving right to left. Viterbi stores each listed node's cost
+ * and the site at which it last changed; nodes inherit the state of their
+ * nearest listed ancestor. The first num_transition entries hold the state
+ * after the previous site of the nodes changed by the tree transitions
+ * before this site, and the rest the state after the transitions of the
+ * nodes changed by the site's update, each node at most once in each part.
+ * See tsls_hmm_run_traceback. */
+typedef struct {
+    int32_t num_transition;
     int32_t size;
-    tsk_id_t *node;
-    int8_t *previous_flag;
+    traceback_entry_t *entries;
 } traceback_delta_t;
 
 /* The compressed output of the forward and backward algorithms. At each
@@ -142,14 +155,32 @@ typedef struct {
      * if it is not in the traceback's set */
     int8_t traceback_flag;
     /* The walks up the tree to the nearest node with a likelihood are
-     * cached (see tsls_hmm_find_listed). A node whose cache_stamp equals the
-     * HMM's is either a node with a likelihood, whose listed_ancestor is
-     * itself, or a node without one whose listed_ancestor leads, by
-     * following listed_ancestor, to its nearest ancestor with a likelihood.
-     * Nodes with likelihoods always have the current stamp. */
+     * cached (see tsls_hmm_find_listed). A node with a likelihood has
+     * cache_stamp TSLS_LISTED_STAMP, the largest value. An unlisted node
+     * whose cache_stamp equals the HMM's has a listed_ancestor that leads,
+     * by following listed_ancestor through unlisted nodes, to its nearest
+     * ancestor with a likelihood, and every node between them on the path
+     * has the current stamp too, so that listing one of them clears the
+     * caches (see tsls_hmm_mark_listed). Stale stamps are smaller than the
+     * HMM's,
+     * so a walk stops at the first node with cache_stamp >= the HMM's, and
+     * incrementing the HMM's stamp clears every cache. */
     uint32_t cache_stamp;
     tsk_id_t listed_ancestor;
 } tsls_node_t;
+
+/* The mutations on a node at a site, as a range of preorder positions in
+ * an indexed tree, with the mutation's derived state and its position in
+ * the site's mutations (later mutations on the same node win). */
+typedef struct {
+    int32_t start;
+    int32_t end;
+    int32_t order;
+    allele_t state;
+} mutation_range_t;
+
+/* The cache_stamp of a node with a likelihood (see tsls_node_t) */
+#define TSLS_LISTED_STAMP UINT32_MAX
 
 /* A node's likelihood. */
 typedef struct {
@@ -159,7 +190,11 @@ typedef struct {
      * with a likelihood (NULL_NODE for a root), set at the start of each
      * site (see tsls_hmm_set_listed_ancestors) */
     tsk_id_t ancestor;
-    int32_t unused;
+    /* In Viterbi, value is the cost the node last changed to, at site:
+     * its cost now is that, lowered by any smaller ceiling since (see
+     * tsls_hmm_t), which is cached in current. */
+    int32_t site;
+    double current;
 } tsls_likelihood_t;
 
 /* The Li and Stephens HMM on a tree sequence. The index is borrowed, and
@@ -183,6 +218,19 @@ typedef struct {
     double prune_threshold;
     double *recombination_rate;
     double *mismatch_rate;
+    /* Viterbi works with costs, minus the logs of the odds (see
+     * docs/likelihood_model.md): per site, the cost of switching relative
+     * to staying, and the costs of the two emissions, less the smaller of
+     * them (emission_base), so that both are at least 0. stay_cost is minus
+     * the log of the staying probability; with emission_base it gives the
+     * normalisation factors of viterbi_matrix. */
+    double *switch_cost;
+    double *match_cost;
+    double *mismatch_cost;
+    double *emission_base;
+    double *stay_cost;
+    /* The algorithm running (MODE_VITERBI etc. in hmm.c) */
+    int mode;
     /* The per-node state, including the tree's parent links */
     tsls_node_t *tree;
     tsls_likelihood_t *likelihood;
@@ -191,11 +239,6 @@ typedef struct {
     uint32_t cache_stamp;
     /* The number of children of each node in the current tree */
     int32_t *num_children;
-    /* The children of each node, as ranges child_offset[u] to
-     * child_offset[u + 1] of children, built when a tree is numbered (see
-     * tsls_hmm_number_tree) */
-    int32_t *child_offset;
-    tsk_id_t *children;
     /* The number of nodes in the subtree below each node, including itself.
      * Only maintained for the forward and backward algorithms. */
     int64_t *num_below;
@@ -208,33 +251,79 @@ typedef struct {
     tsk_id_t *likelihood_nodes_tmp;
     tsk_id_t *likelihood_nodes;
     traceback_delta_t *traceback;
-    /* Scratch buffer for the previous flags of a site's traceback delta */
+    /* Scratch buffer for the recombination flags of the list at a site */
     int8_t *traceback_flags_tmp;
-    /* The nodes removed from the likelihood list at the current site, for
-     * the traceback delta */
-    tsk_id_t *removed_nodes;
-    int num_removed_nodes;
-    /* Sparse Viterbi (see tsls_hmm_process_site_sparse). When the tree is
-     * numbered, preorder[u] is the position of u in a preorder traversal
-     * of the tree (-1 if u is not in the tree), the subtree of u is the
-     * range [preorder[u], subtree_end[u]), and the likelihood list is kept
-     * sorted by preorder. */
+    /* Viterbi state. best_cost is the minimum cost after the last site
+     * processed, last_site. Per site, the ceiling is the cost of switching
+     * into the site (best_cost + switch_cost), and ceiling_pse the last
+     * earlier site with a strictly smaller ceiling (-1 if none); a stack of
+     * the strictly increasing ceilings back from the last site gives
+     * these (see tsls_hmm_push_ceiling). */
+    double best_cost;
+    tsk_id_t last_site;
+    /* The end of the window of sites being processed */
+    tsk_id_t end_site;
+    /* At the current site, the next site's ceiling if nodes that cost at
+     * least that are treated as equivalent (see
+     * tsls_hmm_equivalent_costs), and infinity otherwise */
+    double dead_cost;
+    /* The cost above the best at which a node is pruned, and the cost of
+     * likelihood_threshold above the best (infinite if they are 0) */
+    double prune_cost;
+    double floor_cost;
+    double *ceiling;
+    int32_t *ceiling_pse;
+    int32_t *ceiling_stack_site;
+    double *ceiling_stack_value;
+    int ceiling_stack_size;
+    /* The changes at the current site, recorded for the traceback delta
+     * (see traceback_delta_t), with a per-node stamp so that each node is
+     * recorded at most once in each part. */
+    traceback_entry_t *delta_buffer;
+    int delta_size;
+    int delta_num_transition;
+    uint32_t *stamp;
+    uint32_t current_stamp;
+    /* Indexed trees (see tsls_hmm_number_tree and
+     * tsls_hmm_process_site_indexed). A tree is numbered if it has at least
+     * index_min_sites sites left. Then preorder[u] is the position of u in
+     * a preorder traversal of the part of the tree that the sites need (-1
+     * for other nodes), the numbered nodes in u's subtree are the range
+     * [preorder[u], subtree_end[u]), preorder_node is the inverse, and
+     * listed_bits marks the positions of the listed nodes. numbered lists
+     * the numbered nodes, so that the next numbering can unset them, and
+     * first_child is workspace. Each remaining site's mutations, as
+     * preorder ranges, are sorted in ranges[range_offset[site]] to
+     * ranges[range_offset[site + 1]], and a site's alleles are found as
+     * segments of the preorder positions. */
     bool tree_numbered;
     tsk_id_t tree_end_site;
+    int index_min_sites;
     int32_t num_numbered;
     int32_t *preorder;
     int32_t *subtree_end;
-    /* The nodes whose values must be recomputed at the next site (they
-     * changed or mismatched at this site), unless all_changed is set */
-    tsk_id_t *changed;
-    int num_changed;
-    tsk_id_t *changed_next;
-    bool all_changed;
-    /* The nodes processed at a sparse site, and a per-node stamp to avoid
-     * processing a node twice */
-    tsk_id_t *site_nodes;
-    uint32_t *stamp;
-    uint32_t current_stamp;
+    tsk_id_t *preorder_node;
+    tsk_id_t *numbered;
+    tsk_id_t *first_child;
+    uint64_t *listed_bits;
+    /* The position of each listed node in likelihood_nodes */
+    int32_t *list_position;
+    mutation_range_t *ranges;
+    size_t max_ranges;
+    int32_t *range_offset;
+    int32_t *range_stack;
+    int32_t *segment_start;
+    allele_t *segment_allele;
+    /* The nodes touched at the current and previous indexed sites, which
+     * are coalesced, and the list's length after the last compaction */
+    tsk_id_t *touched;
+    tsk_id_t *prev_touched;
+    int num_touched;
+    int num_prev_touched;
+    int compact_size;
+    /* Whether current may be out of date for some listed nodes (it is only
+     * kept up to date for the nodes that indexed sites touch) */
+    bool currents_stale;
     size_t num_sparse_sites;
     /* Statistics of the last run: over the sites processed, the total and
      * maximum length of the likelihood list after each site, and the total
@@ -247,6 +336,8 @@ typedef struct {
     size_t site_num_updated;
     tsi_blkalloc_t traceback_allocator;
     size_t total_traceback_size;
+    /* The total number of entries in the traceback deltas */
+    size_t total_delta_size;
     /* The total number of distinct likelihood values over sites, if
      * TSLS_COUNT_DISTINCT is set. */
     size_t total_distinct_values;
@@ -270,6 +361,7 @@ int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     double likelihood_threshold, int flags);
 int tsls_hmm_set_relative_prune_threshold(tsls_hmm_t *self, double threshold);
 int tsls_hmm_set_prune_threshold(tsls_hmm_t *self, double threshold);
+int tsls_hmm_set_index_min_sites(tsls_hmm_t *self, int min_sites);
 int tsls_hmm_free(tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_values(const tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_updated(const tsls_hmm_t *self);
@@ -286,6 +378,7 @@ int tsls_hmm_backward(tsls_hmm_t *self, const allele_t *haplotype,
     const double *forward_normalisation_factor, compressed_matrix_t *output);
 int tsls_hmm_print_state(tsls_hmm_t *self, FILE *out);
 double tsls_hmm_get_mean_traceback_size(tsls_hmm_t *self);
+double tsls_hmm_get_mean_delta_size(const tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_distinct_values(tsls_hmm_t *self);
 size_t tsls_hmm_get_total_memory(tsls_hmm_t *self);
 

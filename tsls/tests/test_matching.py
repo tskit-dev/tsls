@@ -1024,9 +1024,65 @@ class TestSparse:
                     )
                 assert values[0] == pytest.approx(values[1], rel=1e-9)
 
+    def test_many_mutations(self):
+        # More mutations at a site than sparse sites used to handle
+        ts = wright_fisher_ts(3, num_trees_hint=0)
+        tables = ts.dump_tables()
+        rng = np.random.default_rng(3)
+        site = ts.num_sites // 2
+        # Several mutations on some nodes, as recurrent mutations
+        nodes = rng.choice(ts.num_nodes - 1, size=80)
+        for u in nodes:
+            tables.mutations.add_row(
+                site=site, node=int(u), derived_state=ALLELES[int(rng.integers(4))]
+            )
+        tables.sort()
+        tables.build_index()
+        tables.compute_mutation_parents()
+        ts = tables.tree_sequence()
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        rho = np.full(m, 0.02)
+        mu = np.full(m, 0.01)
+        am = tsls.Hmm(ts, rho, mu, alleles=ALLELES, extended_checks=True)
+        num_sparse_sites = 0
+        for h in noisy_queries(ts, A, present, 3):
+            match = np.zeros(m, dtype=np.int8)
+            left, right, parent = am.find_path(h, 0, m, match)
+            path = path_by_site(ts, left, right, parent)
+            np.testing.assert_array_equal(match, A[np.arange(m), path])
+            args = (A, present, continuous, h, rho, mu, len(ALLELES), ts.num_nodes)
+            value = dense.path_log_likelihood(*args, path)
+            assert value == pytest.approx(dense.viterbi_log_likelihood(*args), rel=1e-9)
+            num_sparse_sites += am.num_sparse_sites
+        assert num_sparse_sites > 0
+
+    def test_sites_without_mutations(self):
+        # Trees whose remaining sites have no mutations are numbered too
+        ts = wright_fisher_ts(2, num_trees_hint=3)
+        tables = ts.dump_tables()
+        m = ts.num_sites
+        tables.mutations.keep_rows(tables.mutations.site < m // 2)
+        tables.compute_mutation_parents()
+        ts = tables.tree_sequence()
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        rho = np.full(m, 0.02)
+        mu = np.full(m, 0.01)
+        for h in noisy_queries(ts, A, present, 2):
+            for start, end in [(0, m), (m // 2, m), (m // 2 + 3, m - 2)]:
+                # A new HMM, so the first tree numbered is one of these
+                am = tsls.Hmm(
+                    ts, rho, mu, alleles=ALLELES, extended_checks=True, index_min_sites=1
+                )
+                match = np.zeros(m, dtype=np.int8)
+                left, right, parent = am.find_path(h, start, end, match)
+                path = path_by_site(ts, left, right, parent, start, end)
+                np.testing.assert_array_equal(
+                    match[start:end], A[np.arange(start, end), path]
+                )
+
     def test_rates_change(self):
-        # Sites whose rates differ from the previous site's are processed in
-        # full, and the others can be sparse.
+        # Rates that change between sites don't stop sites being sparse
         ts = wright_fisher_ts(1, num_trees_hint=0)
         A, present, continuous = dense.node_states(ts, ALLELES)
         m = ts.num_sites
@@ -1050,13 +1106,20 @@ class TestSparse:
             )
             assert values[0] == pytest.approx(optimum, rel=1e-9)
 
-    def test_matrix_and_pruning_are_full(self):
+    def test_matrix_is_full(self):
+        # viterbi_matrix stores every value, so it processes every site
         ts = wright_fisher_ts(0, num_trees_hint=0)
         m = ts.num_sites
         h = np.zeros(m, dtype=np.int8)
         am = tsls.Hmm(ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES)
         am.viterbi_matrix(h)
         assert am.num_sparse_sites == 0
+
+    def test_relative_pruning_is_sparse(self):
+        # In Viterbi, relative pruning is a prune threshold
+        ts = wright_fisher_ts(0, num_trees_hint=0)
+        m = ts.num_sites
+        h = np.zeros(m, dtype=np.int8)
         am = tsls.Hmm(
             ts,
             np.full(m, 0.02),
@@ -1065,7 +1128,106 @@ class TestSparse:
             relative_prune_threshold=1e-3,
         )
         am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
-        assert am.num_sparse_sites == 0
+        assert am.num_sparse_sites > 0
+
+    @pytest.mark.parametrize("seed", range(4))
+    @pytest.mark.parametrize("num_trees_hint", [0, 3])
+    def test_every_tree_indexed(self, seed, num_trees_hint):
+        # Index every tree with a site left after its first, so that the
+        # indexed sites meet tree transitions often
+        ts = wright_fisher_ts(seed, num_trees_hint=num_trees_hint)
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        rho = np.full(m, 0.05)
+        mu = np.full(m, 0.01)
+        am = tsls.Hmm(
+            ts, rho, mu, alleles=ALLELES, extended_checks=True, index_min_sites=1
+        )
+        num_sparse_sites = 0
+        for h in noisy_queries(ts, A, present, seed):
+            match = np.zeros(m, dtype=np.int8)
+            left, right, parent = am.find_path(h, 0, m, match)
+            path = path_by_site(ts, left, right, parent)
+            np.testing.assert_array_equal(match, A[np.arange(m), path])
+            args = (A, present, continuous, h, rho, mu, len(ALLELES), ts.num_nodes)
+            value = dense.path_log_likelihood(*args, path)
+            assert value == pytest.approx(dense.viterbi_log_likelihood(*args), rel=1e-9)
+            num_sparse_sites += am.num_sparse_sites
+        assert num_sparse_sites > 0
+
+
+class TestPerSiteRates:
+    """
+    Viterbi with rates that vary at every site, as with a genetic map, so
+    that the cost of switching changes from site to site.
+    """
+
+    def rates(self, ts, seed):
+        rng = np.random.default_rng(seed)
+        m = ts.num_sites
+        rho = 10 ** rng.uniform(-6, -0.3, size=m)
+        mu = 10 ** rng.uniform(-4, -1, size=m)
+        return rho, mu
+
+    @pytest.mark.parametrize("seed", range(6))
+    @pytest.mark.parametrize("num_trees_hint", [0, 2, 10])
+    @pytest.mark.parametrize("sparse", [True, False])
+    def test_optimal(self, seed, num_trees_hint, sparse):
+        ts = wright_fisher_ts(seed, num_trees_hint=num_trees_hint)
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        rho, mu = self.rates(ts, seed)
+        am = tsls.Hmm(
+            ts, rho, mu, alleles=ALLELES, extended_checks=True, sparse=sparse
+        )
+        num_sparse_sites = 0
+        for h in noisy_queries(ts, A, present, seed):
+            match = np.zeros(m, dtype=np.int8)
+            left, right, parent = am.find_path(h, 0, m, match)
+            path = path_by_site(ts, left, right, parent)
+            np.testing.assert_array_equal(match, A[np.arange(m), path])
+            args = (A, present, continuous, h, rho, mu, len(ALLELES), ts.num_nodes)
+            value = dense.path_log_likelihood(*args, path)
+            optimum = dense.viterbi_log_likelihood(*args)
+            assert value == pytest.approx(optimum, rel=1e-9)
+            num_sparse_sites += am.num_sparse_sites
+        # Sparse sites don't depend on the rates being the same at every site
+        if sparse and num_trees_hint == 0:
+            assert num_sparse_sites > 0
+
+    @pytest.mark.parametrize("name", list(EXAMPLES))
+    @pytest.mark.parametrize("seed", range(3))
+    def test_matrix(self, name, seed):
+        ts = EXAMPLES[name]()
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        rho, mu = self.rates(ts, seed)
+        am = tsls.Hmm(ts, rho, mu, alleles=ALLELES, extended_checks=True)
+        for h in queries(ts, A, present):
+            _, _, vm = am.viterbi_matrix(h)
+            V, c = dense.viterbi_matrix(
+                A, present, continuous, h, rho, mu, len(ALLELES), ts.num_nodes
+            )
+            np.testing.assert_allclose(vm.normalisation_factor, c, rtol=1e-12)
+            np.testing.assert_allclose(vm.decode(), V, rtol=1e-12, atol=1e-300)
+
+    @pytest.mark.parametrize("rho", [0.5, 0.9])
+    def test_reentry(self, rho):
+        # Nodes leave and re-enter the tree; with frequent recombination
+        # they can be the best nodes soon after.
+        ts = gap_ts()
+        A, present, continuous = dense.node_states(ts, ALLELES)
+        m = ts.num_sites
+        rho_a = np.full(m, rho)
+        mu_a = np.full(m, 0.05)
+        am = tsls.Hmm(ts, rho_a, mu_a, alleles=ALLELES, extended_checks=True)
+        for h in queries(ts, A, present):
+            match = np.zeros(m, dtype=np.int8)
+            left, right, parent = am.find_path(h, 0, m, match)
+            path = path_by_site(ts, left, right, parent)
+            np.testing.assert_array_equal(match, A[np.arange(m), path])
+            args = (A, present, continuous, h, rho_a, mu_a, len(ALLELES), ts.num_nodes)
+            value = dense.path_log_likelihood(*args, path)
+            assert value == pytest.approx(dense.viterbi_log_likelihood(*args), rel=1e-9)
 
 
 class TestNodeStatistics:
