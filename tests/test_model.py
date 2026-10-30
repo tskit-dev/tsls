@@ -7,9 +7,6 @@ that does not divide by n, and the Viterbi prune thresholds.
 import numpy as np
 import pytest
 import tskit
-
-import dense
-import tsls
 from test_matching import (
     ALLELES,
     EXAMPLES,
@@ -19,6 +16,9 @@ from test_matching import (
     queries,
     wright_fisher_ts,
 )
+
+import dense
+import tsls
 
 A_NUM = len(ALLELES)
 

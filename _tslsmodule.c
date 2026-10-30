@@ -115,8 +115,7 @@ TreeSequence_init(TreeSequence *self, PyObject *args, PyObject *kwds)
         }
         for (j = 0; j < (Py_ssize_t) num_alleles; j++) {
             /* The UTF-8 buffer lives as long as the string */
-            alleles_data[j]
-                = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(alleles_seq, j));
+            alleles_data[j] = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(alleles_seq, j));
             if (alleles_data[j] == NULL) {
                 goto out;
             }
@@ -231,10 +230,10 @@ Hmm_init(Hmm *self, PyObject *args, PyObject *kwds)
     int count_distinct = 0;
     int sparse = 1;
     int index_min_sites = 16;
-    static char *kwlist[] = { "tree_sequence", "recombination", "mismatch",
-        "extended_checks", "likelihood_threshold", "prune_threshold",
-        "relative_prune_threshold", "count_distinct", "sparse", "index_min_sites",
-        NULL };
+    static char *kwlist[]
+        = { "tree_sequence", "recombination", "mismatch", "extended_checks",
+              "likelihood_threshold", "prune_threshold", "relative_prune_threshold",
+              "count_distinct", "sparse", "index_min_sites", NULL };
     TreeSequence *tree_sequence = NULL;
     PyObject *recombination = NULL;
     PyObject *mismatch = NULL;
@@ -375,10 +374,9 @@ Hmm_find_path(Hmm *self, PyObject *args, PyObject *kwds)
     }
 
     Py_BEGIN_ALLOW_THREADS
-    err = tsls_hmm_find_path(self->hmm, (tsk_id_t) start,
-        (tsk_id_t) end, (allele_t *) PyArray_DATA(haplotype_array),
-        (allele_t *) PyArray_DATA(match), &num_edges, PyArray_DATA(left),
-        PyArray_DATA(right), PyArray_DATA(parent));
+    err = tsls_hmm_find_path(self->hmm, (tsk_id_t) start, (tsk_id_t) end,
+        (allele_t *) PyArray_DATA(haplotype_array), (allele_t *) PyArray_DATA(match),
+        &num_edges, PyArray_DATA(left), PyArray_DATA(right), PyArray_DATA(parent));
     Py_END_ALLOW_THREADS
     if (err != 0) {
         handle_library_error(err);
@@ -478,8 +476,7 @@ out:
  * (normalisation_factor, offsets, nodes, values), where the values at site
  * j are nodes[offsets[j]: offsets[j + 1]] and similarly for values. */
 static PyObject *
-Hmm_run_compressed_matrix(
-    Hmm *self, PyObject *haplotype, PyObject *forward_norm)
+Hmm_run_compressed_matrix(Hmm *self, PyObject *haplotype, PyObject *forward_norm)
 {
     int err;
     PyObject *ret = NULL;
@@ -489,8 +486,8 @@ Hmm_run_compressed_matrix(
     compressed_matrix_t cm;
     bool cm_allocated = false;
 
-    haplotype_array
-        = (PyArrayObject *) PyArray_FROMANY(haplotype, NPY_INT8, 1, 1, NPY_ARRAY_IN_ARRAY);
+    haplotype_array = (PyArrayObject *) PyArray_FROMANY(
+        haplotype, NPY_INT8, 1, 1, NPY_ARRAY_IN_ARRAY);
     if (haplotype_array == NULL) {
         goto out;
     }
@@ -510,8 +507,8 @@ Hmm_run_compressed_matrix(
             goto out;
         }
     }
-    err = compressed_matrix_alloc(&cm, num_sites,
-        2 * (self->hmm->num_nodes + 1) * sizeof(double));
+    err = compressed_matrix_alloc(
+        &cm, num_sites, 2 * (self->hmm->num_nodes + 1) * sizeof(double));
     cm_allocated = true;
     if (err != 0) {
         handle_library_error(err);
@@ -520,11 +517,10 @@ Hmm_run_compressed_matrix(
 
     Py_BEGIN_ALLOW_THREADS
     if (forward_norm_array == NULL) {
-        err = tsls_hmm_forward(self->hmm,
-            (allele_t *) PyArray_DATA(haplotype_array), &cm);
+        err = tsls_hmm_forward(
+            self->hmm, (allele_t *) PyArray_DATA(haplotype_array), &cm);
     } else {
-        err = tsls_hmm_backward(self->hmm,
-            (allele_t *) PyArray_DATA(haplotype_array),
+        err = tsls_hmm_backward(self->hmm, (allele_t *) PyArray_DATA(haplotype_array),
             (double *) PyArray_DATA(forward_norm_array), &cm);
     }
     Py_END_ALLOW_THREADS
@@ -573,8 +569,8 @@ Hmm_viterbi_matrix(Hmm *self, PyObject *args, PyObject *kwds)
         goto out;
     }
     num_sites = self->hmm->num_sites;
-    haplotype_array
-        = (PyArrayObject *) PyArray_FROMANY(haplotype, NPY_INT8, 1, 1, NPY_ARRAY_IN_ARRAY);
+    haplotype_array = (PyArrayObject *) PyArray_FROMANY(
+        haplotype, NPY_INT8, 1, 1, NPY_ARRAY_IN_ARRAY);
     if (haplotype_array == NULL) {
         goto out;
     }
@@ -598,10 +594,9 @@ Hmm_viterbi_matrix(Hmm *self, PyObject *args, PyObject *kwds)
         goto out;
     }
     Py_BEGIN_ALLOW_THREADS
-    err = tsls_hmm_find_path_matrix(self->hmm, (tsk_id_t) start,
-        (tsk_id_t) end, (allele_t *) PyArray_DATA(haplotype_array),
-        (allele_t *) PyArray_DATA(match), &num_edges, PyArray_DATA(left),
-        PyArray_DATA(right), PyArray_DATA(parent), &cm);
+    err = tsls_hmm_find_path_matrix(self->hmm, (tsk_id_t) start, (tsk_id_t) end,
+        (allele_t *) PyArray_DATA(haplotype_array), (allele_t *) PyArray_DATA(match),
+        &num_edges, PyArray_DATA(left), PyArray_DATA(right), PyArray_DATA(parent), &cm);
     Py_END_ALLOW_THREADS
     if (err != 0) {
         handle_library_error(err);
@@ -680,8 +675,7 @@ Hmm_get_mean_traceback_size(Hmm *self, void *closure)
     if (Hmm_check_state(self) != 0) {
         goto out;
     }
-    ret = Py_BuildValue(
-        "d", tsls_hmm_get_mean_traceback_size(self->hmm));
+    ret = Py_BuildValue("d", tsls_hmm_get_mean_traceback_size(self->hmm));
 out:
     return ret;
 }
@@ -759,8 +753,7 @@ Hmm_get_mean_num_distinct_values(Hmm *self, void *closure)
     if (Hmm_check_state(self) != 0) {
         goto out;
     }
-    ret = Py_BuildValue(
-        "d", tsls_hmm_get_mean_num_distinct_values(self->hmm));
+    ret = Py_BuildValue("d", tsls_hmm_get_mean_num_distinct_values(self->hmm));
 out:
     return ret;
 }
@@ -801,8 +794,7 @@ static PyGetSetDef Hmm_getsetters[] = {
         "Viterbi run" },
     { "num_sparse_sites", (getter) Hmm_get_num_sparse_sites, NULL,
         "The number of sites processed sparsely in the last Viterbi run." },
-    { "mean_num_distinct_values",
-        (getter) Hmm_get_mean_num_distinct_values, NULL,
+    { "mean_num_distinct_values", (getter) Hmm_get_mean_num_distinct_values, NULL,
         "The mean number of distinct likelihood values per site in the last "
         "Viterbi run (if count_distinct is set)." },
     { "total_memory", (getter) Hmm_get_total_memory, NULL,
@@ -813,15 +805,12 @@ static PyGetSetDef Hmm_getsetters[] = {
 static PyMethodDef Hmm_methods[] = {
     { "find_path", (PyCFunction) Hmm_find_path, METH_VARARGS | METH_KEYWORDS,
         "Returns a best match path for the specified haplotype through the ancestors." },
-    { "viterbi_matrix", (PyCFunction) Hmm_viterbi_matrix,
-        METH_VARARGS | METH_KEYWORDS,
+    { "viterbi_matrix", (PyCFunction) Hmm_viterbi_matrix, METH_VARARGS | METH_KEYWORDS,
         "Runs the Viterbi algorithm and also returns the compressed matrix of "
         "normalised values and recombination flags." },
-    { "forward_matrix", (PyCFunction) Hmm_forward_matrix,
-        METH_VARARGS | METH_KEYWORDS,
+    { "forward_matrix", (PyCFunction) Hmm_forward_matrix, METH_VARARGS | METH_KEYWORDS,
         "Runs the forward algorithm and returns the compressed matrix arrays." },
-    { "backward_matrix", (PyCFunction) Hmm_backward_matrix,
-        METH_VARARGS | METH_KEYWORDS,
+    { "backward_matrix", (PyCFunction) Hmm_backward_matrix, METH_VARARGS | METH_KEYWORDS,
         "Runs the backward algorithm and returns the compressed matrix arrays." },
     { NULL } /* Sentinel */
 };
@@ -860,7 +849,7 @@ static PyMethodDef tsls_methods[] = {
 
 static struct PyModuleDef tslsmodule
     = { PyModuleDef_HEAD_INIT, "_tsls", /* name of module */
-          MODULE_DOC,                      /* module documentation, may be NULL */
+          MODULE_DOC,                   /* module documentation, may be NULL */
           -1, tsls_methods, NULL, NULL, NULL, NULL };
 
 #define INITERROR return NULL

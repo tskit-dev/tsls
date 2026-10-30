@@ -914,14 +914,18 @@ def wright_fisher_ts(seed, *, num_trees_hint, population_size=15, generations=25
     positions = np.sort(rng.choice(np.arange(1, 10 * L), size=60, replace=False)) / 10
     for x in positions:
         tree = ts.at(x)
-        in_tree = [u for u in tree.nodes() if tree.parent(u) != -1 or tree.num_children(u)]
+        in_tree = [
+            u for u in tree.nodes() if tree.parent(u) != -1 or tree.num_children(u)
+        ]
         ancestral = ACGT[rng.integers(4)]
         site = tables.sites.add_row(position=x, ancestral_state=ancestral)
         num_mutations = rng.choice([1, 1, 1, 2, 3])
         nodes = rng.choice(in_tree, size=num_mutations)
         # Older mutations first, as tskit requires
         for u in sorted(nodes, key=lambda u: -ts.nodes_time[u]):
-            tables.mutations.add_row(site=site, node=u, derived_state=ACGT[rng.integers(4)])
+            tables.mutations.add_row(
+                site=site, node=u, derived_state=ACGT[rng.integers(4)]
+            )
     return finalise(tables)
 
 
@@ -1021,7 +1025,9 @@ class TestSparse:
                     cont[0] = present[start]
                     args = (*window, cont, h[start:end], rho[start:end], mu[start:end])
                     values.append(
-                        dense.path_log_likelihood(*args, len(ALLELES), ts.num_nodes, path)
+                        dense.path_log_likelihood(
+                            *args, len(ALLELES), ts.num_nodes, path
+                        )
                     )
                 assert values[0] == pytest.approx(values[1], rel=1e-9)
 
@@ -1098,7 +1104,15 @@ class TestSparse:
                 path = path_by_site(ts, left, right, parent)
                 values.append(
                     dense.path_log_likelihood(
-                        A, present, continuous, h, rho, mu, len(ALLELES), ts.num_nodes, path
+                        A,
+                        present,
+                        continuous,
+                        h,
+                        rho,
+                        mu,
+                        len(ALLELES),
+                        ts.num_nodes,
+                        path,
                     )
                 )
             assert values[0] == pytest.approx(values[1], rel=1e-9)
@@ -1178,9 +1192,7 @@ class TestPerSiteRates:
         A, present, continuous = dense.node_states(ts, ALLELES)
         m = ts.num_sites
         rho, mu = self.rates(ts, seed)
-        am = tsls.Hmm(
-            ts, rho, mu, alleles=ALLELES, extended_checks=True, sparse=sparse
-        )
+        am = tsls.Hmm(ts, rho, mu, alleles=ALLELES, extended_checks=True, sparse=sparse)
         num_sparse_sites = 0
         for h in noisy_queries(ts, A, present, seed):
             match = np.zeros(m, dtype=np.int8)
@@ -1254,10 +1266,18 @@ class TestNodeStatistics:
             stats = {}
             for sparse in [True, False]:
                 am = tsls.Hmm(
-                    ts, np.full(m, 0.02), np.full(m, 0.01), alleles=ALLELES, sparse=sparse
+                    ts,
+                    np.full(m, 0.02),
+                    np.full(m, 0.01),
+                    alleles=ALLELES,
+                    sparse=sparse,
                 )
                 am.find_path(h, 0, m, np.zeros(m, dtype=np.int8))
-                stats[sparse] = (am.mean_num_updated, am.mean_num_values, am.num_sparse_sites)
+                stats[sparse] = (
+                    am.mean_num_updated,
+                    am.mean_num_values,
+                    am.num_sparse_sites,
+                )
             if stats[True][2] > 0:
                 assert stats[True][0] < stats[False][0]
             assert stats[False][0] >= stats[False][1]

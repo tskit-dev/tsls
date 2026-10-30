@@ -56,8 +56,8 @@ build_forest_ts(tsk_treeseq_t *ts, bool extra_site)
     }
     ret = tsk_table_collection_sort(&tables, NULL, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
-    ret = tsk_treeseq_init(ts, &tables,
-        TSK_TS_INIT_BUILD_INDEXES | TSK_TS_INIT_COMPUTE_MUTATION_PARENTS);
+    ret = tsk_treeseq_init(
+        ts, &tables, TSK_TS_INIT_BUILD_INDEXES | TSK_TS_INIT_COMPUTE_MUTATION_PARENTS);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     tsk_table_collection_free(&tables);
 }
@@ -93,7 +93,7 @@ test_allele_encoding(void)
         CU_ASSERT_EQUAL(index.num_alleles[j], 4);
         CU_ASSERT_EQUAL(index.ancestral_state[j],
             acgt_code(ts.tables->sites
-                          .ancestral_state[ts.tables->sites.ancestral_state_offset[j]]));
+                    .ancestral_state[ts.tables->sites.ancestral_state_offset[j]]));
     }
     for (j = 0; j < tsk_treeseq_get_num_mutations(&ts); j++) {
         mutation = &ts.site_mutations_mem[j];
@@ -102,7 +102,8 @@ test_allele_encoding(void)
             acgt_code(mutation->derived_state[0]));
     }
     for (j = 0; j < tsk_treeseq_get_num_sites(&ts); j++) {
-        CU_ASSERT_EQUAL(index.site_mutations_offset[j + 1] - index.site_mutations_offset[j],
+        CU_ASSERT_EQUAL(
+            index.site_mutations_offset[j + 1] - index.site_mutations_offset[j],
             ts.site_mutations_length[j]);
     }
     tsls_index_free(&index);
@@ -311,8 +312,7 @@ tsls_suite_cleanup(void)
 static void
 handle_cunit_error(void)
 {
-    fprintf(stderr, "CUnit error occured: %d: %s\n", CU_get_error(),
-        CU_get_error_msg());
+    fprintf(stderr, "CUnit error occured: %d: %s\n", CU_get_error(), CU_get_error_msg());
     exit(EXIT_FAILURE);
 }
 

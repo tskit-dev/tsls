@@ -33,10 +33,10 @@
 #define NULL_NODE (-1)
 
 /* Matcher flags */
-#define TSLS_EXTENDED_CHECKS     (1 << 0)
-#define TSLS_COUNT_DISTINCT      (1 << 2)
+#define TSLS_EXTENDED_CHECKS (1 << 0)
+#define TSLS_COUNT_DISTINCT  (1 << 2)
 /* Process every Viterbi site in full (see tsls_hmm_process_site_sparse) */
-#define TSLS_DISABLE_SPARSE      (1 << 3)
+#define TSLS_DISABLE_SPARSE (1 << 3)
 
 typedef int8_t allele_t;
 
