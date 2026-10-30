@@ -841,7 +841,7 @@ Hmm_get_total_memory(Hmm *self, void *closure)
         goto out;
     }
 
-#if defined(TSI_NO_ATOMICS)
+#if defined(TSLS_NO_ATOMICS)
     /* Without atomics, return an obviously wrong value */
     val = (unsigned long) PY_SSIZE_T_MAX;
 #else

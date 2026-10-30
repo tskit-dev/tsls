@@ -8,14 +8,14 @@
 
 /* No atomics on Windows for now */
 #if defined(_WIN32)
-#define TSI_NO_ATOMICS 1
+#define TSLS_NO_ATOMICS 1
 #endif
 
-#if !defined(TSI_NO_ATOMICS)
+#if !defined(TSLS_NO_ATOMICS)
 #include <stdatomic.h>
-#define TSI_ATOMIC(T) _Atomic T
+#define TSLS_ATOMIC(T) _Atomic T
 #else
-#define TSI_ATOMIC(T) T
+#define TSLS_ATOMIC(T) T
 #endif
 
 #include "tskit.h"
@@ -50,11 +50,11 @@ typedef int8_t allele_t;
 typedef struct {
     size_t chunk_size; /* number of bytes per chunk */
     size_t top;        /* the offset of the next available byte in the current chunk */
-    size_t current_chunk;          /* the index of the chunk currently being used */
-    TSI_ATOMIC(size_t) total_size; /* the total number of bytes allocated + overhead. */
-    size_t total_allocated;        /* the total number of bytes allocated. */
-    size_t num_chunks;             /* the number of memory chunks. */
-    char **mem_chunks;             /* the memory chunks */
+    size_t current_chunk;           /* the index of the chunk currently being used */
+    TSLS_ATOMIC(size_t) total_size; /* the total number of bytes allocated + overhead. */
+    size_t total_allocated;         /* the total number of bytes allocated. */
+    size_t num_chunks;              /* the number of memory chunks. */
+    char **mem_chunks;              /* the memory chunks */
 } tsls_blockalloc_t;
 
 extern void tsls_blockalloc_print_state(tsls_blockalloc_t *self, FILE *out);
@@ -388,7 +388,7 @@ double tsls_hmm_get_mean_delta_size(const tsls_hmm_t *self);
 double tsls_hmm_get_mean_num_distinct_values(tsls_hmm_t *self);
 size_t tsls_hmm_get_total_memory(tsls_hmm_t *self);
 
-#define tsi_safe_free(pointer)                                                          \
+#define tsls_safe_free(pointer)                                                         \
     do {                                                                                \
         if (pointer != NULL) {                                                          \
             free(pointer);                                                              \

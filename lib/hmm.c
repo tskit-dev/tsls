@@ -280,11 +280,11 @@ out:
 int
 compressed_matrix_free(compressed_matrix_t *self)
 {
-    tsi_safe_free(self->normalisation_factor);
-    tsi_safe_free(self->num_values);
-    tsi_safe_free(self->nodes);
-    tsi_safe_free(self->values);
-    tsi_safe_free(self->flags);
+    tsls_safe_free(self->normalisation_factor);
+    tsls_safe_free(self->num_values);
+    tsls_safe_free(self->nodes);
+    tsls_safe_free(self->values);
+    tsls_safe_free(self->flags);
     tsls_blockalloc_free(&self->allocator);
     return 0;
 }
@@ -627,11 +627,11 @@ out:
 int
 tsls_index_free(tsls_index_t *self)
 {
-    tsi_safe_free(self->num_alleles);
-    tsi_safe_free(self->ancestral_state);
-    tsi_safe_free(self->site_mutations_offset);
-    tsi_safe_free(self->mutation_node);
-    tsi_safe_free(self->mutation_derived_state);
+    tsls_safe_free(self->num_alleles);
+    tsls_safe_free(self->ancestral_state);
+    tsls_safe_free(self->site_mutations_offset);
+    tsls_safe_free(self->mutation_node);
+    tsls_safe_free(self->mutation_derived_state);
     tsls_large_free_array(self->insertion_edges, self->num_edges);
     tsls_large_free_array(self->removal_edges, self->num_edges);
     return 0;
@@ -939,8 +939,8 @@ out:
 int
 tsls_hmm_free(tsls_hmm_t *self)
 {
-    tsi_safe_free(self->recombination_rate);
-    tsi_safe_free(self->mismatch_rate);
+    tsls_safe_free(self->recombination_rate);
+    tsls_safe_free(self->mismatch_rate);
     tsls_large_free_array(self->tree, self->num_nodes);
     tsls_large_free_array(self->likelihood, self->num_nodes);
     tsls_large_free_array(self->num_children, self->num_nodes);
@@ -952,15 +952,15 @@ tsls_hmm_free(tsls_hmm_t *self)
     tsls_large_free_array(self->traceback_flags_tmp, self->num_nodes);
     tsls_large_free_array(self->delta_buffer, 2 * self->num_nodes + 1);
     tsls_large_free_array(self->stamp, self->num_nodes);
-    tsi_safe_free(self->switch_cost);
-    tsi_safe_free(self->match_cost);
-    tsi_safe_free(self->mismatch_cost);
-    tsi_safe_free(self->emission_base);
-    tsi_safe_free(self->stay_cost);
-    tsi_safe_free(self->ceiling);
-    tsi_safe_free(self->ceiling_pse);
-    tsi_safe_free(self->ceiling_stack_site);
-    tsi_safe_free(self->ceiling_stack_value);
+    tsls_safe_free(self->switch_cost);
+    tsls_safe_free(self->match_cost);
+    tsls_safe_free(self->mismatch_cost);
+    tsls_safe_free(self->emission_base);
+    tsls_safe_free(self->stay_cost);
+    tsls_safe_free(self->ceiling);
+    tsls_safe_free(self->ceiling_pse);
+    tsls_safe_free(self->ceiling_stack_site);
+    tsls_safe_free(self->ceiling_stack_value);
     tsls_large_free_array(self->preorder, self->num_nodes);
     tsls_large_free_array(self->subtree_end, self->num_nodes);
     tsls_large_free_array(self->preorder_node, self->num_nodes);
@@ -969,14 +969,14 @@ tsls_hmm_free(tsls_hmm_t *self)
     tsls_large_free_array(self->list_position, self->num_nodes);
     tsls_large_free_array(self->touched, self->num_nodes);
     tsls_large_free_array(self->prev_touched, self->num_nodes);
-    tsi_safe_free(self->listed_bits);
-    tsi_safe_free(self->range_offset);
-    tsi_safe_free(self->ranges);
-    tsi_safe_free(self->range_stack);
-    tsi_safe_free(self->segment_start);
-    tsi_safe_free(self->segment_allele);
-    tsi_safe_free(self->max_likelihood_node);
-    tsi_safe_free(self->traceback);
+    tsls_safe_free(self->listed_bits);
+    tsls_safe_free(self->range_offset);
+    tsls_safe_free(self->ranges);
+    tsls_safe_free(self->range_stack);
+    tsls_safe_free(self->segment_start);
+    tsls_safe_free(self->segment_allele);
+    tsls_safe_free(self->max_likelihood_node);
+    tsls_safe_free(self->traceback);
     tsls_blockalloc_free(&self->traceback_allocator);
     return 0;
 }
