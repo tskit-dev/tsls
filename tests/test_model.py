@@ -1,7 +1,8 @@
 """
 Tests for the likelihood model (docs/likelihood_model.md): the conversions
-in tsls.model, the odds form of Viterbi, the equivalence with the model
-that does not divide by n, and the Viterbi prune thresholds.
+(tsls.switch_odds, path_threshold etc.), the odds form of Viterbi, the
+equivalence with the model that does not divide by n, and the Viterbi prune
+thresholds.
 """
 
 import numpy as np
@@ -30,8 +31,8 @@ def viterbi_costs(A, present, continuous, h, rho, mu, num_alleles, n):
     -log q and a mismatch -log e. Nodes not in the tree have infinite cost.
     """
     m, N = A.shape
-    log_q = np.log(tsls.model.switch_odds(rho, n))
-    log_e = np.log(tsls.model.mismatch_odds(mu, num_alleles))
+    log_q = np.log(tsls.switch_odds(rho, n))
+    log_e = np.log(tsls.mismatch_odds(mu, num_alleles))
     C = np.full((m, N), np.inf)
     c = np.where(present[0], 0.0, np.inf)
     for j in range(m):
@@ -54,8 +55,8 @@ def path_log_odds(continuous, h, matched, path, rho, mu, num_alleles, n):
     switch = np.zeros(m, dtype=bool)
     switch[1:] = (path[1:] != path[:-1]) | ~continuous[np.arange(1, m), path[1:]]
     mismatch = (h != -1) & (h != matched)
-    log_q = np.log(tsls.model.switch_odds(rho, n))
-    log_e = np.log(tsls.model.mismatch_odds(mu, num_alleles))
+    log_q = np.log(tsls.switch_odds(rho, n))
+    log_e = np.log(tsls.mismatch_odds(mu, num_alleles))
     value = np.sum(log_q[switch]) + np.sum(log_e[mismatch])
     return value, int(np.sum(mismatch)), int(np.sum(switch))
 
@@ -64,38 +65,38 @@ class TestConversions:
     @pytest.mark.parametrize("q", [0, 1e-200, 1e-6, 0.3, 1])
     @pytest.mark.parametrize("n", [1, 7, 10**7])
     def test_round_trip(self, q, n):
-        r = tsls.model.recombination_probability(q, n)
+        r = tsls.recombination_probability(q, n)
         assert 0 <= r <= 1
         # 1 - r loses precision as r approaches 1
         rel = 1e-12 + 1e-15 / (1 - r) if r < 1 else 1e-12
-        assert tsls.model.switch_odds(r, n) == pytest.approx(q, rel=rel)
+        assert tsls.switch_odds(r, n) == pytest.approx(q, rel=rel)
 
     def test_n_one(self):
         # With n = 1, the odds are the probability
-        assert tsls.model.recombination_probability(0.01, 1) == pytest.approx(0.01)
+        assert tsls.recombination_probability(0.01, 1) == pytest.approx(0.01)
 
     @pytest.mark.parametrize("q", [-0.1, 1.5])
     def test_bad_odds(self, q):
         with pytest.raises(ValueError, match="between 0 and 1"):
-            tsls.model.recombination_probability(q, 10)
+            tsls.recombination_probability(q, 10)
 
     def test_mismatch_odds(self):
-        assert tsls.model.mismatch_odds(0.01, 5) == pytest.approx(0.01 / 0.96)
+        assert tsls.mismatch_odds(0.01, 5) == pytest.approx(0.01 / 0.96)
 
     @pytest.mark.parametrize("mu", [0, 1e-20, 1e-4, 0.0125, 0.1])
     @pytest.mark.parametrize("num_alleles", [2, 4, 5])
     def test_mismatch_probability_round_trip(self, mu, num_alleles):
-        e = tsls.model.mismatch_odds(mu, num_alleles)
-        assert tsls.model.mismatch_probability(e, num_alleles) == pytest.approx(mu)
+        e = tsls.mismatch_odds(mu, num_alleles)
+        assert tsls.mismatch_probability(e, num_alleles) == pytest.approx(mu)
 
     def test_mismatch_probability_per_site(self):
         e = np.array([0.01, 0.02])
-        mu = tsls.model.mismatch_probability(e, np.array([4, 5]))
+        mu = tsls.mismatch_probability(e, np.array([4, 5]))
         np.testing.assert_allclose(mu, [0.01 / 1.03, 0.02 / 1.08])
 
     def test_bad_mismatch_odds(self):
         with pytest.raises(ValueError, match="non-negative"):
-            tsls.model.mismatch_probability(-0.1, 4)
+            tsls.mismatch_probability(-0.1, 4)
 
     def test_mismatch_probability_other_num_alleles(self):
         # As in sc2ts with deletions as missing data: 4 alleles with mu
@@ -104,7 +105,7 @@ class TestConversions:
         ts = EXAMPLES["two_trees"]()
         m = ts.num_sites
         mu4 = 0.0125
-        mu5 = tsls.model.mismatch_probability(tsls.model.mismatch_odds(mu4, 4), 5)
+        mu5 = tsls.mismatch_probability(tsls.mismatch_odds(mu4, 4), 5)
         A, present, _ = dense.node_states(ts, ALLELES)
         results = []
         for alleles, mu in [(ALLELES[:4], mu4), (ALLELES, mu5)]:
@@ -126,14 +127,14 @@ class TestConversions:
             np.testing.assert_allclose(a, b, rtol=1e-12)
 
     def test_path_threshold_constant(self):
-        e = tsls.model.mismatch_odds(0.01, 5)
-        q = tsls.model.switch_odds(0.02, 100)
-        tol = tsls.model.THRESHOLD_TOLERANCE
-        assert tsls.model.path_threshold(0, 0.01, 5) == 1 - tol
-        assert tsls.model.path_threshold(3, 0.01, 5) == pytest.approx(
+        e = tsls.mismatch_odds(0.01, 5)
+        q = tsls.switch_odds(0.02, 100)
+        tol = tsls.THRESHOLD_TOLERANCE
+        assert tsls.path_threshold(0, 0.01, 5) == 1 - tol
+        assert tsls.path_threshold(3, 0.01, 5) == pytest.approx(
             e**3 * (1 - tol), rel=1e-14
         )
-        t = tsls.model.path_threshold(
+        t = tsls.path_threshold(
             2, 0.01, 5, num_switches=1, recombination=0.02, num_nodes=100
         )
         assert t == pytest.approx(e**2 * q * (1 - tol), rel=1e-14)
@@ -142,17 +143,17 @@ class TestConversions:
         # The k most costly sites: the smallest odds
         mu = np.array([0.01, 0.001, 0.02, 0.005])
         num_alleles = np.array([2, 5, 5, 3])
-        e = tsls.model.mismatch_odds(mu, num_alleles)
-        t = tsls.model.path_threshold(2, mu, num_alleles, tolerance=0)
+        e = tsls.mismatch_odds(mu, num_alleles)
+        t = tsls.path_threshold(2, mu, num_alleles, tolerance=0)
         assert t == pytest.approx(np.prod(np.sort(e)[:2]))
 
     def test_path_threshold_errors(self):
         with pytest.raises(ValueError, match="recombination"):
-            tsls.model.path_threshold(1, 0.01, 5, num_switches=1)
+            tsls.path_threshold(1, 0.01, 5, num_switches=1)
         with pytest.raises(ValueError, match="More events"):
-            tsls.model.path_threshold(3, [0.01, 0.01], 5)
+            tsls.path_threshold(3, [0.01, 0.01], 5)
         with pytest.raises(ValueError, match=">= 0"):
-            tsls.model.path_threshold(-1, 0.01, 5)
+            tsls.path_threshold(-1, 0.01, 5)
 
 
 @pytest.mark.parametrize("name", list(EXAMPLES))
@@ -170,7 +171,7 @@ class TestModelEquivalence:
         m = ts.num_sites
         n = ts.num_nodes
         q_a = np.full(m, q)
-        r_a = tsls.model.recombination_probability(q_a, n)
+        r_a = tsls.recombination_probability(q_a, n)
         mu = np.full(m, 0.02)
         for h in queries(ts, A, present):
             args = (A, present, continuous, h)
@@ -196,7 +197,7 @@ class TestModelEquivalence:
         m = ts.num_sites
         q_a = np.full(m, q)
         mu = np.full(m, 0.02)
-        r = tsls.model.recombination_probability(q_a, ts.num_nodes)
+        r = tsls.recombination_probability(q_a, ts.num_nodes)
         am = tsls.Hmm(ts, r, mu, alleles=ALLELES, extended_checks=True)
         for h in queries(ts, A, present):
             match = np.zeros(m, dtype=np.int8)
@@ -251,7 +252,7 @@ class TestPruneThreshold:
         A, present, continuous = dense.node_states(ts, ALLELES)
         m = ts.num_sites
         n = ts.num_nodes
-        rho = tsls.model.recombination_probability(np.full(m, 1e-5), n)
+        rho = tsls.recombination_probability(np.full(m, 1e-5), n)
         mu = np.full(m, 0.01)
         num_sparse_sites = 0
         for h in noisy_queries(ts, A, present, seed):
@@ -259,7 +260,7 @@ class TestPruneThreshold:
             optimum = dense.viterbi_log_likelihood(*args)
             path, match, _ = self.run(ts, h, rho, mu, 0, sparse)
             _, k, s = path_log_odds(continuous, h, match, path, rho, mu, A_NUM, n)
-            t = tsls.model.path_threshold(
+            t = tsls.path_threshold(
                 k, mu, A_NUM, num_switches=s, recombination=rho, num_nodes=n
             )
             path, match, am = self.run(ts, h, rho, mu, t, sparse)
@@ -279,14 +280,14 @@ class TestPruneThreshold:
         A, present, continuous = dense.node_states(ts, ALLELES)
         m = ts.num_sites
         n = ts.num_nodes
-        rho = tsls.model.recombination_probability(np.full(m, 1e-4), n)
+        rho = tsls.recombination_probability(np.full(m, 1e-4), n)
         mu = np.full(m, 0.01)
         num_certified = 0
         for h in noisy_queries(ts, A, present, seed):
             args = (A, present, continuous, h, rho, mu, A_NUM, n)
             optimum = dense.viterbi_log_likelihood(*args)
             for k in range(6):
-                t = tsls.model.path_threshold(k, mu, A_NUM)
+                t = tsls.path_threshold(k, mu, A_NUM)
                 path, match, _ = self.run(ts, h, rho, mu, t, sparse)
                 log_odds, _, _ = path_log_odds(
                     continuous, h, match, path, rho, mu, A_NUM, n
@@ -319,11 +320,11 @@ class TestPruneThreshold:
         h = np.full(m, ALLELES.index("C"), dtype=np.int8)
         n = ts.num_nodes
         mu = np.full(m, 0.01)
-        e = tsls.model.mismatch_odds(0.01, A_NUM)
+        e = tsls.mismatch_odds(0.01, A_NUM)
         # A switch costs one more mismatch than k
-        rho = tsls.model.recombination_probability(np.full(m, e ** (k + 1)), n)
+        rho = tsls.recombination_probability(np.full(m, e ** (k + 1)), n)
 
-        t = tsls.model.path_threshold(k, mu, A_NUM)
+        t = tsls.path_threshold(k, mu, A_NUM)
         path, match, _ = self.run(ts, h, rho, mu, t, sparse)
         assert list(path) == [0] * m
         path, match, _ = self.run(ts, h, rho, mu, e**k * (1 + 1e-6), sparse)

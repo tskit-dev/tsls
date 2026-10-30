@@ -131,7 +131,7 @@ def n_weighted_rho(rho, n):
     Return the rho for weight_by_n=True with the same ratio of switching to a
     given node to staying as rho with weight_by_n=False.
     """
-    return float(tsls.model.recombination_probability(rho, n))
+    return float(tsls.recombination_probability(rho, n))
 
 
 def make_matcher(

@@ -2,9 +2,10 @@
 
 This document defines the HMM that tsls computes, shows that sc2ts's
 "k mismatches per recombination" setting is a choice of parameters in this
-model, and derives exact Viterbi thresholds from it. The functions in
-`tsls.model` implement the formulas, and `tests/test_model.py` checks
-them.
+model, and derives exact Viterbi thresholds from it. The functions
+`tsls.switch_odds`, `recombination_probability`, `mismatch_odds`,
+`mismatch_probability` and `path_threshold` implement the formulas, and
+`tests/test_model.py` checks them.
 
 ## The model
 
@@ -73,7 +74,7 @@ where C_j(u) is the cost of the best path that is at u at site j
 (`test_viterbi_values_are_odds`). Viterbi needs only q_j and e_j. Forward
 and backward also need r_j itself, because they sum over paths.
 
-`tsls.model.switch_odds(r, n)` and `tsls.model.recombination_probability(q, n)`
+`tsls.switch_odds(r, n)` and `tsls.recombination_probability(q, n)`
 convert between r and q:
 
     q = (r / n) / (1 - r + r / n),        r = q n / (1 - q + q n).
@@ -159,7 +160,7 @@ costs over the sites. So
 
 finds the optimal path whenever it has at most k mismatches and s switches.
 With constant rates this is `e^k q^s`. This is
-`tsls.model.path_threshold(k, mu, num_alleles, num_switches=s, ...)`.
+`tsls.path_threshold(k, mu, num_alleles, num_switches=s, ...)`.
 
 **It is the largest such threshold.** If an optimal path has its k
 mismatches at the first k sites, at which another node matches, then it is
@@ -183,7 +184,7 @@ this.
 **Free pruning.** A node with value below `q_{j+1}` is overtaken at site
 j + 1 by recombination from the best node, whatever its value. So pruning
 below `min_j q_j` changes no values at later sites
-(`tsls.model.lossless_threshold`). The k-mismatch threshold is useful when
+(`tsls.lossless_threshold`). The k-mismatch threshold is useful when
 it is above this, that is, when k mismatches cost less than a switch.
 
 ### Worked example: sc2ts parameters

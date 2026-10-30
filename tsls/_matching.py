@@ -7,7 +7,7 @@ import numpy as np
 import _tsls
 
 
-def site_alleles(alleles, num_sites):
+def _site_alleles(alleles, num_sites):
     """
     Return the (alleles, num_alleles) tuple giving the specified alleles in
     the form _tsls.TreeSequence takes them: the concatenation of each site's
@@ -86,7 +86,7 @@ class TreeSequence(_tsls.TreeSequence):
         flat_alleles = None
         num_alleles = None
         if alleles is not None:
-            flat_alleles, num_alleles = site_alleles(alleles, ts.num_sites)
+            flat_alleles, num_alleles = _site_alleles(alleles, ts.num_sites)
         self.ts = ts
         self.alleles = alleles
         super().__init__(ll_tables, alleles=flat_alleles, num_alleles=num_alleles)
@@ -214,10 +214,11 @@ class Hmm(_tsls.Hmm):
 
     At each site we recombine with the recombination probability r, and then
     copy a node chosen uniformly from all the nodes of the tree sequence.
-    See docs/likelihood_model.md, and tsls.model for the conversions
-    between probabilities and the odds that Viterbi depends on. To specify
+    See docs/likelihood_model.md, and tsls.switch_odds, mismatch_odds and
+    their inverses for the conversions between probabilities and the odds
+    that Viterbi depends on. To specify
     a recombination by its cost in mismatches, as sc2ts does, use
-    ``tsls.model.recombination_probability``.
+    ``tsls.recombination_probability``.
 
     The states of the HMM at a given position are the nodes in the tree at
     that position: nodes with a parent or at least one child. Isolated
@@ -228,7 +229,7 @@ class Hmm(_tsls.Hmm):
     In Viterbi, nodes whose values (normalised by the maximum at each site)
     are below ``prune_threshold`` are dropped, and can only be reached again
     by recombination. Any path whose odds relative to the best are at least
-    the threshold is kept: ``tsls.model.path_threshold`` gives the threshold
+    the threshold is kept: ``tsls.path_threshold`` gives the threshold
     that finds the optimal path if it has at most k mismatches.
 
     After normalisation at each site, values below likelihood_threshold are
@@ -279,7 +280,7 @@ class Hmm(_tsls.Hmm):
             raise ValueError(
                 "weight_by_n has been removed: recombination is always divided "
                 "by the number of nodes. For the weight_by_n=False model with "
-                "recombination rho, use tsls.model.recombination_probability"
+                "recombination rho, use tsls.recombination_probability"
                 "(rho, ts.num_nodes)"
             )
         if not isinstance(ts, TreeSequence):

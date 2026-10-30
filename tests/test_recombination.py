@@ -77,12 +77,12 @@ def _haldane(distance):
 
 
 class TestReadGeneticMap:
-    """Tests for tsls.model.read_genetic_map."""
+    """Tests for tsls.read_genetic_map."""
 
     def _read(self, tmp_path, rows, positions):
         path = tmp_path / "map.txt"
         _write_map_rows(path, rows)
-        return tsls.model.read_genetic_map(path, np.asarray(positions))
+        return tsls.read_genetic_map(path, np.asarray(positions))
 
     # Nominal cases
 
@@ -112,7 +112,7 @@ class TestReadGeneticMap:
     def test_path_as_string(self, tmp_path):
         path = tmp_path / "map.txt"
         _write_map_rows(path, [(0, 1.0, 0.0), (100, 0.0, 1.0)])
-        result = tsls.model.read_genetic_map(str(path), np.array([50]))
+        result = tsls.read_genetic_map(str(path), np.array([50]))
         np.testing.assert_allclose(result, [0.005])
 
     # Corner cases
@@ -171,7 +171,7 @@ class TestReadGeneticMap:
         path.write_text(
             "chr\tpos\trate\tcm\textra\nchr1\t0\t1.0\t0.0\tx\nchr1\t100\t0.0\t1.0\ty\n"
         )
-        result = tsls.model.read_genetic_map(path, np.array([50]))
+        result = tsls.read_genetic_map(path, np.array([50]))
         np.testing.assert_allclose(result, [0.005])
 
     # Errors
@@ -181,7 +181,7 @@ class TestReadGeneticMap:
         path = tmp_path / "map.txt"
         path.write_text(_HAPMAP_HEADER + "\n")
         with pytest.raises(ValueError, match="empty"):
-            tsls.model.read_genetic_map(path, np.array([10]))
+            tsls.read_genetic_map(path, np.array([10]))
 
     def test_unsorted_positions(self, tmp_path):
         rows = [(0, 1.0, 0.0), (200, 1.0, 2.0), (100, 0.0, 1.0)]
@@ -202,11 +202,11 @@ class TestReadGeneticMap:
         path = tmp_path / "map.txt"
         path.write_text("chr pos rate\nchr1 0 1.0\nchr1 100 0.0\n")
         with pytest.raises(ValueError, match="column"):
-            tsls.model.read_genetic_map(path, np.array([50]))
+            tsls.read_genetic_map(path, np.array([50]))
 
     def test_missing_file(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            tsls.model.read_genetic_map(tmp_path / "nope.txt", np.array([50]))
+            tsls.read_genetic_map(tmp_path / "nope.txt", np.array([50]))
 
     # msprime oracle
 
@@ -217,7 +217,7 @@ class TestReadGeneticMap:
         path = tmp_path / "map.txt"
         _write_hapmap(path, rate_map, omit_origin=layout == "omit_origin")
         sites = _random_sites(seed, rate_map.sequence_length, rate_map)
-        result = tsls.model.read_genetic_map(path, sites)
+        result = tsls.read_genetic_map(path, sites)
         expected = rate_map.get_cumulative_mass(sites)
         np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-15)
 
@@ -229,7 +229,7 @@ class TestReadGeneticMap:
         _write_hapmap(path, rate_map, omit_origin=layout == "omit_origin")
         oracle = msprime.RateMap.read_hapmap(path, map_col=3)
         sites = _random_sites(seed, oracle.sequence_length, oracle)
-        result = tsls.model.read_genetic_map(path, sites)
+        result = tsls.read_genetic_map(path, sites)
         np.testing.assert_allclose(
             result, oracle.get_cumulative_mass(sites), rtol=1e-12, atol=1e-15
         )
@@ -240,12 +240,12 @@ class TestReadGeneticMap:
         _write_map_rows(path, rows)
         oracle = msprime.RateMap.read_hapmap(path, map_col=3, sequence_length=20_000)
         sites = np.array([0, 50, 100, 2500, 5000, 12_000, 20_000], dtype=np.int32)
-        result = tsls.model.read_genetic_map(path, sites)
+        result = tsls.read_genetic_map(path, sites)
         np.testing.assert_allclose(result, oracle.get_cumulative_mass(sites))
 
 
 class TestRecombinationProbabilities:
-    """Tests for tsls.model.recombination_probabilities."""
+    """Tests for tsls.recombination_probabilities."""
 
     positions = np.array([10, 200, 250, 1000, 5000, 9000], dtype=np.int32)
 
@@ -253,23 +253,23 @@ class TestRecombinationProbabilities:
 
     def test_constant_rate(self):
         rate = 1e-5
-        probs = tsls.model.recombination_probabilities(rate, self.positions)
+        probs = tsls.recombination_probabilities(rate, self.positions)
         assert probs.shape == (6,)
         assert probs[0] == 0
         np.testing.assert_allclose(probs[1:], _haldane(np.diff(self.positions) * rate))
 
     def test_small_distances_approximately_linear(self):
-        probs = tsls.model.recombination_probabilities(1e-8, self.positions)
+        probs = tsls.recombination_probabilities(1e-8, self.positions)
         np.testing.assert_allclose(probs[1:], np.diff(self.positions) * 1e-8, rtol=1e-4)
 
     def test_known_value(self):
         # 0.5 Morgans between the sites
-        probs = tsls.model.recombination_probabilities(0.005, np.array([0, 100]))
+        probs = tsls.recombination_probabilities(0.005, np.array([0, 100]))
         np.testing.assert_allclose(probs, [0, (1 - np.exp(-1)) / 2])
 
     def test_proportional_to_spacing_for_small_rate(self):
         positions = np.array([0, 100, 300, 600])
-        probs = tsls.model.recombination_probabilities(1e-10, positions)
+        probs = tsls.recombination_probabilities(1e-10, positions)
         np.testing.assert_allclose(probs[2] / probs[1], 2, rtol=1e-6)
         np.testing.assert_allclose(probs[3] / probs[1], 3, rtol=1e-6)
 
@@ -277,15 +277,15 @@ class TestRecombinationProbabilities:
         path = tmp_path / "map.txt"
         _write_map_rows(path, [(0, 1.0, 0.0), (1000, 3.0, 0.1), (3000, 0.0, 0.7)])
         positions = np.array([0, 500, 1000, 2000, 3000])
-        probs = tsls.model.recombination_probabilities(path, positions)
+        probs = tsls.recombination_probabilities(path, positions)
         distance = np.array([0.0005, 0.0005, 0.003, 0.003])
         np.testing.assert_allclose(probs, np.concatenate([[0], _haldane(distance)]))
 
     def test_genetic_map_path_as_string(self, tmp_path):
         path = tmp_path / "map.txt"
         _write_map_rows(path, [(0, 1.0, 0.0), (10_000, 0.0, 1.0)])
-        from_str = tsls.model.recombination_probabilities(str(path), self.positions)
-        from_path = tsls.model.recombination_probabilities(path, self.positions)
+        from_str = tsls.recombination_probabilities(str(path), self.positions)
+        from_path = tsls.recombination_probabilities(path, self.positions)
         np.testing.assert_array_equal(from_str, from_path)
         np.testing.assert_allclose(
             from_path[1:], _haldane(np.diff(self.positions) * 1e-6)
@@ -294,58 +294,56 @@ class TestRecombinationProbabilities:
     def test_uniform_map_equals_constant_rate(self, tmp_path):
         path = tmp_path / "map.txt"
         _write_map_rows(path, [(0, 2.0, 0.0), (10_000, 0.0, 0.02)])
-        from_map = tsls.model.recombination_probabilities(path, self.positions)
-        from_rate = tsls.model.recombination_probabilities(2e-8, self.positions)
+        from_map = tsls.recombination_probabilities(path, self.positions)
+        from_rate = tsls.recombination_probabilities(2e-8, self.positions)
         np.testing.assert_allclose(from_map, from_rate)
 
     # Corner cases
 
     def test_zero_rate(self):
-        probs = tsls.model.recombination_probabilities(0.0, self.positions)
+        probs = tsls.recombination_probabilities(0.0, self.positions)
         np.testing.assert_array_equal(probs, np.zeros(6))
 
     def test_negative_rate(self):
         with pytest.raises(ValueError, match="non-negative"):
-            tsls.model.recombination_probabilities(-1e-8, self.positions)
+            tsls.recombination_probabilities(-1e-8, self.positions)
 
     def test_single_site(self):
-        probs = tsls.model.recombination_probabilities(1e-8, np.array([100]))
+        probs = tsls.recombination_probabilities(1e-8, np.array([100]))
         np.testing.assert_array_equal(probs, [0])
 
     def test_no_sites(self):
-        probs = tsls.model.recombination_probabilities(
-            1e-8, np.array([], dtype=np.int32)
-        )
+        probs = tsls.recombination_probabilities(1e-8, np.array([], dtype=np.int32))
         assert probs.shape == (0,)
 
     def test_saturates_at_half(self):
-        probs = tsls.model.recombination_probabilities(1.0, self.positions)
+        probs = tsls.recombination_probabilities(1.0, self.positions)
         assert np.all(probs <= 0.5)
         np.testing.assert_allclose(probs[1:], 0.5)
 
     def test_bounded_and_monotonic_in_distance(self):
         positions = np.cumsum(np.arange(1, 50)) * 1000
-        probs = tsls.model.recombination_probabilities(1e-5, positions)
+        probs = tsls.recombination_probabilities(1e-5, positions)
         assert np.all(probs >= 0)
         assert np.all(probs <= 0.5)
         assert np.all(np.diff(probs[1:]) > 0)
 
     def test_large_int32_positions_do_not_overflow(self):
         positions = np.array([0, 2**31 - 1], dtype=np.int32)
-        probs = tsls.model.recombination_probabilities(1e-10, positions)
+        probs = tsls.recombination_probabilities(1e-10, positions)
         np.testing.assert_allclose(probs[1], _haldane((2**31 - 1) * 1e-10))
 
     def test_sites_in_zero_rate_region(self, tmp_path):
         path = tmp_path / "map.txt"
         _write_map_rows(path, [(0, 0.0, 0.0), (5000, 1.0, 0.0), (6000, 0.0, 0.1)])
-        probs = tsls.model.recombination_probabilities(path, np.array([10, 2000, 4999]))
+        probs = tsls.recombination_probabilities(path, np.array([10, 2000, 4999]))
         np.testing.assert_array_equal(probs, [0, 0, 0])
 
     def test_sites_beyond_map(self, tmp_path):
         path = tmp_path / "map.txt"
         _write_map_rows(path, [(0, 1.0, 0.0), (1000, 0.0, 1.0)])
         positions = np.array([500, 1500, 2500])
-        probs = tsls.model.recombination_probabilities(path, positions)
+        probs = tsls.recombination_probabilities(path, positions)
         np.testing.assert_allclose(probs, [0, _haldane(0.005), 0])
 
     # msprime oracle
@@ -357,7 +355,7 @@ class TestRecombinationProbabilities:
         path = tmp_path / "map.txt"
         _write_hapmap(path, rate_map, omit_origin=layout == "omit_origin")
         sites = _random_sites(seed, rate_map.sequence_length)
-        probs = tsls.model.recombination_probabilities(path, sites)
+        probs = tsls.recombination_probabilities(path, sites)
         distance = np.diff(rate_map.get_cumulative_mass(sites))
         assert probs[0] == 0
         np.testing.assert_allclose(probs[1:], _haldane(distance), rtol=1e-9, atol=1e-15)
@@ -366,7 +364,7 @@ class TestRecombinationProbabilities:
     def test_constant_rate_matches_rate_map(self, rate):
         sites = _random_sites(0, 1_000_000)
         rate_map = msprime.RateMap.uniform(1_000_000, rate)
-        probs = tsls.model.recombination_probabilities(rate, sites)
+        probs = tsls.recombination_probabilities(rate, sites)
         # The oracle differences cumulative masses of up to ~1, which loses
         # ~1e-16 in absolute terms, so compare with an absolute tolerance too.
         distance = np.diff(rate_map.get_cumulative_mass(sites))
@@ -406,7 +404,7 @@ class TestHmmWithRecombinationRate:
 
     def test_high_recombination_prefers_switch(self):
         _, a, b = self.reference_ts()
-        r = tsls.model.recombination_probabilities(1e-3, self.positions)
+        r = tsls.recombination_probabilities(1e-3, self.positions)
         left, parent, matched = self.find_path(r, 1e-20)
         assert list(parent) == [a, b]
         assert list(left) == [0, 30]
@@ -414,7 +412,7 @@ class TestHmmWithRecombinationRate:
 
     def test_low_recombination_rate_prefers_mismatch(self):
         _, a, _ = self.reference_ts()
-        r = tsls.model.recombination_probabilities(1e-12, self.positions)
+        r = tsls.recombination_probabilities(1e-12, self.positions)
         _, parent, matched = self.find_path(r, 1e-2)
         assert list(parent) == [a]
         np.testing.assert_array_equal(matched, [1, 1, 0])
@@ -425,7 +423,7 @@ class TestHmmWithRecombinationRate:
         _, a, b = self.reference_ts()
         path = tmp_path / "map.txt"
         _write_map_rows(path, [(0, 1e4, 0.0), (15, 0.0, 10.0), (100, 0.0, 10.0)])
-        r = tsls.model.recombination_probabilities(path, self.positions)
+        r = tsls.recombination_probabilities(path, self.positions)
         assert r[2] == 0
         # Make B also carry the derived allele at the second site.
         ts, _, _ = self.reference_ts()

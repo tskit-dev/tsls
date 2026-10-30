@@ -17,10 +17,11 @@ implementations that were in tsinfer and [tskit](https://github.com/tskit-dev/ts
   non-integer) coordinates.
 - There is one likelihood model, with recombination always divided by the
   number of nodes, and exact Viterbi prune thresholds derived from it
-  ([docs/likelihood_model.md](docs/likelihood_model.md), `tsls.model`).
+  ([docs/likelihood_model.md](docs/likelihood_model.md); `tsls.switch_odds`,
+  `tsls.path_threshold` etc.).
   sc2ts's model, which specifies a recombination by its cost in
   mismatches, is the same model with
-  `r = tsls.model.recombination_probability(rho, num_nodes)`.
+  `r = tsls.recombination_probability(rho, num_nodes)`.
 
 ## Usage
 

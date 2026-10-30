@@ -242,7 +242,7 @@ def model_rho(ts, rho, rate):
     """
     if rate == "probability":
         return rho
-    return tsls.model.recombination_probability(rho, ts.num_nodes)
+    return tsls.recombination_probability(rho, ts.num_nodes)
 
 
 def queries(ts, A, present):
@@ -735,7 +735,7 @@ class TestPruning:
         A, present, continuous = dense.node_states(ts, ALLELES)
         rho, mu = model_rho(ts, 0.05, rate), 0.02
         n = ts.num_nodes
-        threshold = tsls.model.lossless_threshold(rho, n)
+        threshold = tsls.lossless_threshold(rho, n)
         m = ts.num_sites
         if kind == "floor":
             am, _ = make_matcher(ts, rho, mu, likelihood_threshold=threshold)
