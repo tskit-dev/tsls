@@ -43,9 +43,7 @@ from matplotlib import pyplot as plt
 
 import tsls
 
-sys.path.insert(
-    0, str(pathlib.Path(__file__).resolve().parent.parent / "tsls" / "tests")
-)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
 import dense
 
 logger = logging.getLogger(__name__)
