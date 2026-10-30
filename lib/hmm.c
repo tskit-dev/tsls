@@ -419,47 +419,73 @@ encode_allele(const char *state, tsk_size_t length, const char **alleles,
     return ret;
 }
 
+/* Set up the specified list of n alleles for a site, storing the lengths of
+ * the alleles in allele_length. */
+static int WARN_UNUSED
+init_site_alleles(const char **alleles, tsk_size_t n, tsk_size_t *allele_length)
+{
+    int ret = 0;
+    tsk_size_t k;
+
+    if (n > TSLS_MAX_ALLELES) {
+        ret = TSLS_ERR_TOO_MANY_ALLELES;
+        goto out;
+    }
+    for (k = 0; k < n; k++) {
+        allele_length[k] = (tsk_size_t) strlen(alleles[k]);
+        if (find_allele(alleles[k], allele_length[k], alleles, allele_length, k) >= 0) {
+            ret = TSLS_ERR_DUPLICATE_ALLELE;
+            goto out;
+        }
+    }
+out:
+    return ret;
+}
+
 /* Encode the ancestral and derived states of the tree sequence as integers.
  * If alleles is NULL, the alleles are numbered at each site as in tskit's
  * genotype decoding: the ancestral state is 0, and the derived states are
  * numbered in order of their first appearance at the site, with at least
- * two alleles at each site. Otherwise, each
- * state is its index in the specified list of alleles. */
+ * two alleles at each site. Otherwise, alleles is the concatenation of a
+ * list of alleles for each site, with num_site_alleles[j] alleles for site
+ * j, and each state is its index in its site's list. The number of alleles
+ * at a site is then the length of its list. */
 static int WARN_UNUSED
 tsls_index_encode_alleles(
-    tsls_index_t *self, const char **alleles, tsk_size_t num_global_alleles)
+    tsls_index_t *self, const char **alleles, const tsk_size_t *num_site_alleles)
 {
     int ret = 0;
     const tsk_treeseq_t *ts = self->tree_sequence;
     const tsk_site_table_t *sites = &ts->tables->sites;
-    const bool global = alleles != NULL;
+    const bool given = alleles != NULL;
     const char *site_alleles[TSLS_MAX_ALLELES];
     tsk_size_t allele_length[TSLS_MAX_ALLELES];
-    const char **list = global ? alleles : site_alleles;
+    const char **list = site_alleles;
     const tsk_mutation_t *mutation;
     tsk_size_t j, k, n, offset;
     tsk_size_t mutation_offset = 0;
+    tsk_size_t alleles_offset = 0;
     int code;
 
-    if (global) {
-        if (num_global_alleles > TSLS_MAX_ALLELES) {
-            ret = TSLS_ERR_TOO_MANY_ALLELES;
-            goto out;
-        }
-        for (j = 0; j < num_global_alleles; j++) {
-            allele_length[j] = (tsk_size_t) strlen(alleles[j]);
-        }
-    }
     for (j = 0; j < self->num_sites; j++) {
         /* Mutations are sorted by site, so the mutations of each site are
          * contiguous in the mutation table */
         self->site_mutations_offset[j] = mutation_offset;
         mutation_offset += ts->site_mutations_length[j];
-        n = global ? num_global_alleles : 0;
+        n = 0;
+        if (given) {
+            list = alleles + alleles_offset;
+            n = num_site_alleles[j];
+            alleles_offset += n;
+            ret = init_site_alleles(list, n, allele_length);
+            if (ret != 0) {
+                goto out;
+            }
+        }
         offset = sites->ancestral_state_offset[j];
         code = encode_allele(sites->ancestral_state + offset,
             sites->ancestral_state_offset[j + 1] - offset, list, allele_length, &n,
-            !global);
+            !given);
         if (code < 0) {
             ret = code;
             goto out;
@@ -468,7 +494,7 @@ tsls_index_encode_alleles(
         for (k = 0; k < ts->site_mutations_length[j]; k++) {
             mutation = &ts->site_mutations[j][k];
             code = encode_allele(mutation->derived_state, mutation->derived_state_length,
-                list, allele_length, &n, !global);
+                list, allele_length, &n, !given);
             if (code < 0) {
                 ret = code;
                 goto out;
@@ -477,10 +503,11 @@ tsls_index_encode_alleles(
             self->mutation_node[mutation->id] = mutation->node;
             self->mutation_derived_state[mutation->id] = (allele_t) code;
         }
-        /* A site always has at least two alleles, so that a haplotype can
-         * differ from a site with no mutations (such as a tsinfer
-         * ancestor's focal sites, which are not yet in the tree sequence). */
-        self->num_alleles[j] = TSK_MAX(n, 2);
+        /* With the numbering from the tree sequence, a site always has at
+         * least two alleles, so that a haplotype can differ from a site with
+         * no mutations (such as a tsinfer ancestor's focal sites, which are
+         * not yet in the tree sequence). */
+        self->num_alleles[j] = given ? n : TSK_MAX(n, 2);
     }
     self->site_mutations_offset[self->num_sites] = mutation_offset;
 out:
@@ -539,7 +566,7 @@ seek_edge_covers(const tsk_tree_position_t *tp, const tsls_edge_t *edge, double 
 
 int
 tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
-    const char **alleles, tsk_size_t num_alleles)
+    const char **alleles, const tsk_size_t *num_site_alleles)
 {
     int ret = 0;
     const size_t num_mutations = tsk_treeseq_get_num_mutations(tree_sequence);
@@ -570,7 +597,7 @@ tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
         ret = TSLS_ERR_NO_MEMORY;
         goto out;
     }
-    ret = tsls_index_encode_alleles(self, alleles, num_alleles);
+    ret = tsls_index_encode_alleles(self, alleles, num_site_alleles);
     if (ret != 0) {
         goto out;
     }

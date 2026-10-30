@@ -31,7 +31,7 @@ tsls_strerror(int err)
             ret = "Haplotype allele must be missing (-1) or >= 0 and < num_alleles";
             break;
         case TSLS_ERR_UNKNOWN_ALLELE:
-            ret = "An ancestral or derived state is not in the list of alleles";
+            ret = "An ancestral or derived state is not in its site's list of alleles";
             break;
         case TSLS_ERR_TOO_MANY_ALLELES:
             ret = "Too many distinct alleles at a site";
@@ -47,6 +47,9 @@ tsls_strerror(int err)
             break;
         case TSLS_ERR_BAD_PARAM_VALUE:
             ret = "Bad parameter value";
+            break;
+        case TSLS_ERR_DUPLICATE_ALLELE:
+            ret = "The alleles at a site must be unique";
             break;
     }
     return ret;

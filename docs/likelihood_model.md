@@ -3,7 +3,7 @@
 This document defines the HMM that tsls computes, shows that sc2ts's
 "k mismatches per recombination" setting is a choice of parameters in this
 model, and derives exact Viterbi thresholds from it. The functions in
-`tsls.model` implement the formulas, and `tsls/tests/test_model.py` checks
+`tsls.model` implement the formulas, and `tests/test_model.py` checks
 them.
 
 ## The model
@@ -11,9 +11,18 @@ them.
 The states at site j are the nodes in the local tree T_j: the nodes with a
 parent or at least one child. Let n be the number of nodes in the tree
 sequence, r_j the recombination probability and mu_j the mismatch
-probability at site j, and A_j the number of alleles at the site.
+probability at site j, and A_j the number of alleles at the site. If the
+alleles are given (`tsls.TreeSequence(ts, alleles=...)`), A_j is the length
+of site j's list, whether or not the alleles are all in the tree sequence
+there. Otherwise A_j is the number of distinct states at the site in the
+tree sequence, and at least 2.
 
-**Start.** The path starts at a node chosen uniformly from all n nodes.
+**Start.** The path starts at a node chosen uniformly from all n nodes. The
+transition below is applied at the first site too, so each node in T_0
+starts with probability `(1 - r_0 + r_0 P_0 / n) / n`, where P_0 is the
+number of nodes in T_0. This is the same for every node, so it doesn't
+affect Viterbi paths or posteriors, but it makes the likelihood depend on
+which end of the sequence the path starts from.
 
 **Transition** into site j. With probability r_j the path recombines and
 copies a node chosen uniformly from all n nodes. Otherwise it stays on the

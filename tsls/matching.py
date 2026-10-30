@@ -7,6 +7,49 @@ import numpy as np
 import _tsls
 
 
+def site_alleles(alleles, num_sites):
+    """
+    Return the (alleles, num_alleles) tuple giving the specified alleles in
+    the form _tsls.TreeSequence takes them: the concatenation of each site's
+    list of alleles, and the number of alleles at each site. alleles is
+    either one list of alleles for every site, or a list of alleles for each
+    site, as a sequence of sequences or a 2D array, in which trailing empty
+    strings are padding.
+    """
+    per_site = isinstance(alleles, np.ndarray) and alleles.ndim == 2
+    if not per_site and not isinstance(alleles, np.ndarray):
+        alleles = list(alleles)
+        per_site = len(alleles) > 0 and not isinstance(alleles[0], str)
+    if not per_site:
+        alleles = [str(allele) for allele in alleles]
+        if len(set(alleles)) != len(alleles):
+            raise ValueError("Alleles must be unique")
+        num_alleles = np.full(num_sites, len(alleles), dtype=np.uint64)
+        return alleles * num_sites, num_alleles
+
+    if isinstance(alleles, np.ndarray):
+        table = alleles.astype(object)
+    else:
+        rows = [list(row) for row in alleles]
+        width = max((len(row) for row in rows), default=0)
+        table = np.full((len(rows), width), "", dtype=object)
+        for j, row in enumerate(rows):
+            table[j, : len(row)] = row
+    if table.shape[0] != num_sites:
+        raise ValueError(
+            f"Per-site alleles must have one row for each of the {num_sites} sites"
+        )
+    present = table != ""
+    if np.any(present[:, 1:] & ~present[:, :-1]):
+        raise ValueError(
+            "Empty strings in per-site alleles must come after all the alleles "
+            "of a site (they are padding)"
+        )
+    num_alleles = np.sum(present, axis=1).astype(np.uint64)
+    flat = [str(allele) for allele in table[present]]
+    return flat, num_alleles
+
+
 class TreeSequence(_tsls.TreeSequence):
     """
     A tskit tree sequence in the form used by the HMM, with its alleles
@@ -17,21 +60,36 @@ class TreeSequence(_tsls.TreeSequence):
     ancestral state is 0 and derived states are numbered from 1 in order of
     their first appearance at the site. Every site has at least two alleles,
     so that 1 can be matched at a site with no mutations (as in tsinfer, for
-    an ancestor's focal sites). If ``alleles`` is specified, every state is
-    instead its index in this list.
+    an ancestor's focal sites).
+
+    Otherwise, ``alleles`` gives the alleles, and every state is its index
+    in the list of alleles of its site. It is either:
+
+    - one list of alleles (strings) for every site; or
+    - a list of alleles for each site, as a sequence of sequences or a 2D
+      array with one row for each site. Trailing empty strings in a row are
+      padding, so a ``(num_sites, max_alleles)`` array padded with ``""``
+      (as tsinfer's VCZ allele arrays are) can be used directly.
+
+    The number of alleles at a site (``num_alleles``, which sets the
+    emission probabilities) is then the length of its list, and a haplotype
+    can have any of them at the site, whether or not they are in the tree
+    sequence there. Every ancestral and derived state must be in its site's
+    list, the alleles of a site must be unique, and a site can have at most
+    127 alleles.
     """
 
     def __init__(self, ts, *, alleles=None):
         tables = ts.dump_tables()
         ll_tables = _tsls.LightweightTableCollection(tables.sequence_length)
         ll_tables.fromdict(tables.asdict())
+        flat_alleles = None
+        num_alleles = None
         if alleles is not None:
-            alleles = list(alleles)
-            if len(set(alleles)) != len(alleles):
-                raise ValueError("Alleles must be unique")
+            flat_alleles, num_alleles = site_alleles(alleles, ts.num_sites)
         self.ts = ts
         self.alleles = alleles
-        super().__init__(ll_tables, alleles=alleles)
+        super().__init__(ll_tables, alleles=flat_alleles, num_alleles=num_alleles)
 
 
 class CompressedMatrix:
@@ -250,7 +308,14 @@ class Hmm(_tsls.Hmm):
         Run the Viterbi algorithm on the haplotype h over sites [start, end),
         writing the matched haplotype into match_out, and return the
         (left, right, parent) arrays of the copying path, in right-to-left
-        order.
+        order. The matched haplotype is -1 (missing) outside [start, end).
+
+        The path covers [x, y), where x is the position of site start (0 if
+        start is 0) and y is the position of site end (the sequence length
+        if end is the number of sites). Each breakpoint is the position of
+        the first site copied from the next segment. Among equally likely
+        paths, which one is returned is not specified, and can change
+        between versions of tsls.
         """
         path_len, left, right, parent, matched = super().find_path(h, start, end)
         match_out[:] = matched
@@ -260,8 +325,9 @@ class Hmm(_tsls.Hmm):
         """
         Run the Viterbi algorithm on the haplotype h over sites [start, end)
         and return the ((left, right, parent), matched, matrix) tuple: the
-        copying path (right-to-left, as find_path), the matched haplotype, and
-        the CompressedMatrix of the values stored in the traceback.
+        copying path (right-to-left, as find_path), the matched haplotype (-1
+        outside [start, end)), and the CompressedMatrix of the values stored
+        in the traceback.
         """
         if end is None:
             end = self.ts.num_sites

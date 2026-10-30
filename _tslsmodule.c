@@ -7,6 +7,7 @@
 #include <structmember.h>
 #include <float.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "lib/tsls.h"
 
@@ -42,6 +43,13 @@ handle_library_error(int err)
                || err == TSLS_ERR_MATCH_IMPOSSIBLE_EXTREME_MUTATION_PROBA
                || err == TSLS_ERR_MATCH_IMPOSSIBLE_ZERO_RECOMB_PRECISION) {
         PyErr_Format(TslsMatchImpossible, "%s", tsls_strerror(err));
+    } else if (err == TSLS_ERR_BAD_HAPLOTYPE_ALLELE || err == TSLS_ERR_UNKNOWN_ALLELE
+               || err == TSLS_ERR_TOO_MANY_ALLELES || err == TSLS_ERR_DUPLICATE_ALLELE
+               || err == TSLS_ERR_BAD_SITE_RANGE
+               || err == TSLS_ERR_BAD_NORMALISATION_FACTOR || err == TSLS_ERR_BAD_PRUNING
+               || err == TSLS_ERR_BAD_PARAM_VALUE) {
+        /* Errors in the inputs */
+        PyErr_Format(PyExc_ValueError, "%s", tsls_strerror(err));
     } else {
         PyErr_Format(TslsLibraryError, "%s", tsls_strerror(err));
     }
@@ -83,6 +91,9 @@ TreeSequence_dealloc(TreeSequence *self)
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
+/* Initialise from a LightweightTableCollection and, optionally, the alleles
+ * of each site: alleles is the concatenation of the sites' lists of alleles
+ * (strings), and num_alleles the number of alleles in each site's list. */
 static int
 TreeSequence_init(TreeSequence *self, PyObject *args, PyObject *kwds)
 {
@@ -90,36 +101,26 @@ TreeSequence_init(TreeSequence *self, PyObject *args, PyObject *kwds)
     int err;
     LightweightTableCollection *tables = NULL;
     PyObject *alleles = Py_None;
+    PyObject *num_alleles = Py_None;
     PyObject *alleles_seq = NULL;
+    PyArrayObject *num_alleles_array = NULL;
     const char **alleles_data = NULL;
-    tsk_size_t num_alleles = 0;
-    Py_ssize_t j;
-    static char *kwlist[] = { "tables", "alleles", NULL };
+    const tsk_size_t *num_alleles_data = NULL;
+    Py_ssize_t j, total_alleles;
+    tsk_size_t num_sites;
+    uint64_t total;
+    static char *kwlist[] = { "tables", "alleles", "num_alleles", NULL };
 
     self->tree_sequence = NULL;
     self->index = NULL;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!|O", kwlist,
-            &LightweightTableCollectionType, &tables, &alleles)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!|OO", kwlist,
+            &LightweightTableCollectionType, &tables, &alleles, &num_alleles)) {
         goto out;
     }
-    if (alleles != Py_None) {
-        alleles_seq = PySequence_Fast(alleles, "alleles must be a sequence");
-        if (alleles_seq == NULL) {
-            goto out;
-        }
-        num_alleles = (tsk_size_t) PySequence_Fast_GET_SIZE(alleles_seq);
-        alleles_data = PyMem_Calloc(num_alleles + 1, sizeof(*alleles_data));
-        if (alleles_data == NULL) {
-            PyErr_NoMemory();
-            goto out;
-        }
-        for (j = 0; j < (Py_ssize_t) num_alleles; j++) {
-            /* The UTF-8 buffer lives as long as the string */
-            alleles_data[j] = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(alleles_seq, j));
-            if (alleles_data[j] == NULL) {
-                goto out;
-            }
-        }
+    if ((alleles == Py_None) != (num_alleles == Py_None)) {
+        PyErr_SetString(
+            PyExc_ValueError, "alleles and num_alleles must be specified together");
+        goto out;
     }
     if (LightweightTableCollection_check_state(tables) != 0) {
         goto out;
@@ -135,12 +136,53 @@ TreeSequence_init(TreeSequence *self, PyObject *args, PyObject *kwds)
         handle_tskit_error(err);
         goto out;
     }
+    if (alleles != Py_None) {
+        num_sites = tsk_treeseq_get_num_sites(self->tree_sequence);
+        alleles_seq = PySequence_Fast(alleles, "alleles must be a sequence");
+        if (alleles_seq == NULL) {
+            goto out;
+        }
+        num_alleles_array = (PyArrayObject *) PyArray_FROMANY(
+            num_alleles, NPY_UINT64, 1, 1, NPY_ARRAY_IN_ARRAY);
+        if (num_alleles_array == NULL) {
+            goto out;
+        }
+        if (PyArray_DIM(num_alleles_array, 0) != (npy_intp) num_sites) {
+            PyErr_SetString(
+                PyExc_ValueError, "num_alleles must have one entry for each site");
+            goto out;
+        }
+        num_alleles_data = PyArray_DATA(num_alleles_array);
+        total = 0;
+        for (j = 0; j < (Py_ssize_t) num_sites; j++) {
+            total += num_alleles_data[j];
+        }
+        total_alleles = PySequence_Fast_GET_SIZE(alleles_seq);
+        if (total != (uint64_t) total_alleles) {
+            PyErr_SetString(PyExc_ValueError,
+                "The number of alleles must be the sum of num_alleles");
+            goto out;
+        }
+        alleles_data = PyMem_Calloc((size_t) total_alleles + 1, sizeof(*alleles_data));
+        if (alleles_data == NULL) {
+            PyErr_NoMemory();
+            goto out;
+        }
+        for (j = 0; j < total_alleles; j++) {
+            /* The UTF-8 buffer lives as long as the string */
+            alleles_data[j] = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(alleles_seq, j));
+            if (alleles_data[j] == NULL) {
+                goto out;
+            }
+        }
+    }
     self->index = PyMem_Calloc(1, sizeof(*self->index));
     if (self->index == NULL) {
         PyErr_NoMemory();
         goto out;
     }
-    err = tsls_index_init(self->index, self->tree_sequence, alleles_data, num_alleles);
+    err = tsls_index_init(
+        self->index, self->tree_sequence, alleles_data, num_alleles_data);
     if (err != 0) {
         handle_library_error(err);
         goto out;
@@ -149,6 +191,7 @@ TreeSequence_init(TreeSequence *self, PyObject *args, PyObject *kwds)
 out:
     PyMem_Free(alleles_data);
     Py_XDECREF(alleles_seq);
+    Py_XDECREF(num_alleles_array);
     return ret;
 }
 
@@ -172,9 +215,35 @@ TreeSequence_get_num_sites(TreeSequence *self, void *closure)
         "n", (Py_ssize_t) tsk_treeseq_get_num_sites(self->tree_sequence));
 }
 
+static PyObject *
+TreeSequence_get_num_alleles(TreeSequence *self, void *closure)
+{
+    PyArrayObject *array = NULL;
+    npy_intp dims[1];
+    int64_t *data;
+    tsk_size_t j;
+
+    if (TreeSequence_check_state(self) != 0) {
+        goto out;
+    }
+    dims[0] = (npy_intp) self->index->num_sites;
+    array = (PyArrayObject *) PyArray_SimpleNew(1, dims, NPY_INT64);
+    if (array == NULL) {
+        goto out;
+    }
+    data = PyArray_DATA(array);
+    for (j = 0; j < self->index->num_sites; j++) {
+        data[j] = (int64_t) self->index->num_alleles[j];
+    }
+out:
+    return (PyObject *) array;
+}
+
 static PyGetSetDef TreeSequence_getsetters[] = {
     { "num_nodes", (getter) TreeSequence_get_num_nodes, NULL, "The number of nodes" },
     { "num_sites", (getter) TreeSequence_get_num_sites, NULL, "The number of sites" },
+    { "num_alleles", (getter) TreeSequence_get_num_alleles, NULL,
+        "The number of alleles at each site" },
     { NULL } /* Sentinel */
 };
 
@@ -372,6 +441,8 @@ Hmm_find_path(Hmm *self, PyObject *args, PyObject *kwds)
     if (left == NULL || right == NULL || parent == NULL || match == NULL) {
         goto out;
     }
+    /* Sites outside [start, end) aren't matched, and are missing data */
+    memset(PyArray_DATA(match), 0xff, (size_t) dims[0]);
 
     Py_BEGIN_ALLOW_THREADS
     err = tsls_hmm_find_path(self->hmm, (tsk_id_t) start, (tsk_id_t) end,
@@ -586,6 +657,8 @@ Hmm_viterbi_matrix(Hmm *self, PyObject *args, PyObject *kwds)
     if (left == NULL || right == NULL || parent == NULL || match == NULL) {
         goto out;
     }
+    /* Sites outside [start, end) aren't matched, and are missing data */
+    memset(PyArray_DATA(match), 0xff, (size_t) dims[0]);
     err = compressed_matrix_alloc(
         &cm, num_sites, 2 * (self->hmm->num_nodes + 1) * sizeof(double));
     cm_allocated = true;

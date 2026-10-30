@@ -22,15 +22,22 @@ def node_states(ts, alleles=None):
     present[j, u] is True if node u is in the tree at site j, and
     continuous[j, u] is True if node u is in every tree between site j - 1
     and site j (continuous[0] = present[0]). If alleles is None, the
-    ancestral state is 0 and every derived state is 1.
+    ancestral state is 0 and every derived state is 1. Otherwise alleles is
+    one list of alleles for every site, or a list of lists, one per site,
+    and each state is its index in its site's list.
     """
     A = np.zeros((ts.num_sites, ts.num_nodes), dtype=np.int8)
     present = np.zeros((ts.num_sites, ts.num_nodes), dtype=bool)
     tree_index = np.zeros(ts.num_sites, dtype=int)
     in_tree = np.zeros((ts.num_trees, ts.num_nodes), dtype=bool)
 
-    def encode(state, default):
-        return default if alleles is None else alleles.index(state)
+    per_site = alleles is not None and not isinstance(alleles[0], str)
+
+    def encode(site, state, default):
+        if alleles is None:
+            return default
+        site_alleles = alleles[site] if per_site else alleles
+        return site_alleles.index(state)
 
     for tree in ts.trees():
         for u in range(ts.num_nodes):
@@ -38,8 +45,8 @@ def node_states(ts, alleles=None):
         for site in tree.sites():
             state = {}
             for mutation in site.mutations:
-                state[mutation.node] = encode(mutation.derived_state, 1)
-            ancestral = encode(site.ancestral_state, 0)
+                state[mutation.node] = encode(site.id, mutation.derived_state, 1)
+            ancestral = encode(site.id, site.ancestral_state, 0)
             for u in range(ts.num_nodes):
                 v = u
                 while v != -1 and v not in state:
@@ -52,6 +59,15 @@ def node_states(ts, alleles=None):
         trees = in_tree[tree_index[j - 1] : tree_index[j] + 1]
         continuous[j] = np.all(trees, axis=0)
     return A, present, continuous
+
+
+def site_num_alleles(num_alleles, j):
+    """
+    Return the number of alleles at site j, from a number for every site or
+    an array of the number at each site.
+    """
+    num_alleles = np.asarray(num_alleles)
+    return num_alleles if num_alleles.ndim == 0 else num_alleles[j]
 
 
 def emission(A_site, h_site, mu, num_alleles):
@@ -73,7 +89,7 @@ def forward(A, present, continuous, h, rho, mu, num_alleles, n, threshold=0):
         total = np.sum(f)
         f = np.where(continuous[j], f, 0)
         f = (f * (1 - rho[j]) + rho[j] / n * total) * emission(
-            A[j], h[j], mu[j], num_alleles
+            A[j], h[j], mu[j], site_num_alleles(num_alleles, j)
         )
         f = np.where(present[j], f, 0)
         c[j] = np.sum(f)
@@ -97,7 +113,11 @@ def backward(A, present, continuous, h, rho, mu, num_alleles, n, c, threshold=0)
             b = ((1 - rho[j + 1]) * b + rho[j + 1] * total / n) / c[j + 1]
             b = np.where(present[j], np.maximum(b, threshold), 0)
         B[j] = b
-        b = np.where(present[j], b * emission(A[j], h[j], mu[j], num_alleles), 0)
+        b = np.where(
+            present[j],
+            b * emission(A[j], h[j], mu[j], site_num_alleles(num_alleles, j)),
+            0,
+        )
         total = np.sum(b)
     return B
 
@@ -116,7 +136,11 @@ def viterbi_matrix(A, present, continuous, h, rho, mu, num_alleles, n):
     for j in range(m):
         v = np.where(continuous[j], v, 0)
         v = np.maximum(v * (1 - rho[j] + rho[j] / n), rho[j] / n)
-        v = np.where(present[j], v * emission(A[j], h[j], mu[j], num_alleles), 0)
+        v = np.where(
+            present[j],
+            v * emission(A[j], h[j], mu[j], site_num_alleles(num_alleles, j)),
+            0,
+        )
         c[j] = np.max(v)
         v = v / c[j]
         V[j] = v
@@ -145,6 +169,6 @@ def path_log_likelihood(A, present, continuous, h, rho, mu, num_alleles, n, path
             p_t = 1 - rho[j] + rho[j] / n
         else:
             p_t = rho[j] / n
-        e = emission(A[j, u], h[j], mu[j], num_alleles)
+        e = emission(A[j, u], h[j], mu[j], site_num_alleles(num_alleles, j))
         log_likelihood += np.log(p_t * e)
     return log_likelihood

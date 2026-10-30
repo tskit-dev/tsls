@@ -352,8 +352,14 @@ int compressed_matrix_alloc(
 int compressed_matrix_free(compressed_matrix_t *self);
 size_t compressed_matrix_get_total_values(const compressed_matrix_t *self);
 
+/* Initialise the index for the specified tree sequence. If alleles is NULL,
+ * the alleles are numbered at each site as tskit does (the ancestral state
+ * is 0 and derived states are numbered in order of first appearance), with
+ * at least two alleles at each site. Otherwise alleles is the concatenation
+ * of a list of alleles for each site, num_site_alleles[j] of them for site
+ * j, and each state is its index in its site's list. */
 int tsls_index_init(tsls_index_t *self, const tsk_treeseq_t *tree_sequence,
-    const char **alleles, tsk_size_t num_alleles);
+    const char **alleles, const tsk_size_t *num_site_alleles);
 int tsls_index_free(tsls_index_t *self);
 
 int tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,

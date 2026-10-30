@@ -513,7 +513,7 @@ class TestInterface:
     def test_unknown_allele(self):
         ts = single_tree_ts()
         m = ts.num_sites
-        with pytest.raises(tsls.LibraryError, match="not in the list"):
+        with pytest.raises(ValueError, match="not in its site.s list"):
             tsls.Hmm(ts, np.zeros(m), np.zeros(m), alleles=["A", "C"])
 
     def test_duplicate_alleles(self):
@@ -556,7 +556,7 @@ class TestInterface:
         _, _, parent = am.find_path(np.array([1, 1], dtype=np.int8), 0, 2, match)
         assert list(parent) == [0]
         assert list(match) == [1, 0]
-        with pytest.raises(tsls.LibraryError, match="Haplotype allele"):
+        with pytest.raises(ValueError, match="Haplotype allele"):
             am.find_path(np.array([1, 2], dtype=np.int8), 0, 2, match)
 
     def test_shared_tree_sequence(self):
@@ -584,9 +584,9 @@ class TestInterface:
         h = np.zeros(ts.num_sites, dtype=np.int8)
         h[1] = state
         match = np.zeros(ts.num_sites, dtype=np.int8)
-        with pytest.raises(tsls.LibraryError, match="Haplotype allele"):
+        with pytest.raises(ValueError, match="Haplotype allele"):
             am.find_path(h, 0, ts.num_sites, match)
-        with pytest.raises(tsls.LibraryError, match="Haplotype allele"):
+        with pytest.raises(ValueError, match="Haplotype allele"):
             am.forward_matrix(h)
 
     @pytest.mark.parametrize(("start", "end"), [(0, 0), (-1, 2), (2, 1), (0, 5)])
@@ -595,7 +595,7 @@ class TestInterface:
         am, _ = make_matcher(ts, 1e-2, 1e-2)
         h = np.zeros(ts.num_sites, dtype=np.int8)
         match = np.zeros(ts.num_sites, dtype=np.int8)
-        with pytest.raises(tsls.LibraryError, match="site range"):
+        with pytest.raises(ValueError, match="site range"):
             am.find_path(h, start, end, match)
 
     def test_bad_lengths(self):
@@ -615,7 +615,7 @@ class TestInterface:
         ts = single_tree_ts()
         am, _ = make_matcher(ts, 1e-2, 1e-2)
         h = np.zeros(ts.num_sites, dtype=np.int8)
-        with pytest.raises(tsls.LibraryError, match="normalisation"):
+        with pytest.raises(ValueError, match="normalisation"):
             am.backward_matrix(h, np.zeros(ts.num_sites))
 
     def test_match_impossible(self):
@@ -767,7 +767,7 @@ class TestPruning:
     def test_bad_relative_prune_threshold(self, threshold):
         ts = single_tree_ts()
         m = ts.num_sites
-        with pytest.raises(tsls.LibraryError, match="pruning"):
+        with pytest.raises(ValueError, match="pruning"):
             tsls.Hmm(
                 ts,
                 np.zeros(m),
@@ -1568,3 +1568,168 @@ def test_msprime_against_dense(seed, num_samples):
     H.append(rng.integers(0, 4, size=ts.num_sites).astype(np.int8))
     for h in H:
         check_against_dense(ts, np.asarray(h, dtype=np.int8), 0.01, 0.01, rtol=1e-10)
+
+
+def random_site_alleles(ts, seed):
+    """
+    Return a list of alleles for each site of ts: its states in a random
+    order, and some of the other alleles in ALLELES that aren't in the tree
+    sequence there, so the number of alleles differs between sites.
+    """
+    rng = np.random.default_rng(seed)
+    lists = []
+    for site in ts.sites():
+        states = {site.ancestral_state} | {m.derived_state for m in site.mutations}
+        others = [a for a in ALLELES if a not in states]
+        extra = rng.choice(others, size=rng.integers(0, len(others) + 1), replace=False)
+        site_alleles = list(states) + list(extra)
+        rng.shuffle(site_alleles)
+        lists.append([str(a) for a in site_alleles])
+    return lists
+
+
+def padded(lists):
+    """
+    Return the per-site allele lists as a 2D array padded with "", as tsinfer
+    stores them.
+    """
+    width = max(len(row) for row in lists) + 1
+    table = np.full((len(lists), width), "", dtype=object)
+    for j, row in enumerate(lists):
+        table[j, : len(row)] = row
+    return table
+
+
+class TestPerSiteAlleles:
+    @pytest.mark.parametrize("seed", [1, 2])
+    @pytest.mark.parametrize(("rho", "mu"), PARAMS)
+    def test_against_dense(self, example, seed, rho, mu):
+        ts, _, _, _ = example
+        lists = random_site_alleles(ts, seed)
+        num_alleles = np.array([len(row) for row in lists])
+        A, present, continuous = dense.node_states(ts, lists)
+        tts = tsls.TreeSequence(ts, alleles=lists)
+        np.testing.assert_array_equal(tts.num_alleles, num_alleles)
+        m = ts.num_sites
+        n = ts.num_nodes
+        rho_a = np.full(m, rho)
+        mu_a = np.full(m, mu)
+        rng = np.random.default_rng(seed)
+        H = [A[:, u] for u in range(n) if np.all(present[:, u])][:3]
+        # Random haplotypes, including alleles that no node has at a site
+        for _ in range(3):
+            H.append((rng.random(m) * num_alleles).astype(np.int8))
+        for h in H:
+            h = np.asarray(h, dtype=np.int8)
+            am = tsls.Hmm(tts, rho_a, mu_a, extended_checks=True)
+            match = np.zeros(m, dtype=np.int8)
+            left, right, parent = am.find_path(h, 0, m, match)
+            path = path_by_site(ts, left, right, parent)
+            np.testing.assert_array_equal(match, A[np.arange(m), path])
+            args = (A, present, continuous, h, rho_a, mu_a, num_alleles, n)
+            value = dense.path_log_likelihood(*args, path)
+            assert value == pytest.approx(dense.viterbi_log_likelihood(*args), rel=1e-9)
+            fm = am.forward_matrix(h)
+            F, c = dense.forward(*args)
+            np.testing.assert_allclose(fm.decode(), F, rtol=1e-12, atol=1e-300)
+            bm = am.backward_matrix(h, fm.normalisation_factor)
+            B = dense.backward(*args, c)
+            np.testing.assert_allclose(bm.decode(), B, rtol=1e-12, atol=1e-300)
+
+    def test_padded_array(self, example):
+        # A padded 2D array gives the same as the lists, and so does an
+        # array of fixed-width strings.
+        ts, _, _, _ = example
+        lists = random_site_alleles(ts, 3)
+        m = ts.num_sites
+        h = np.zeros(m, dtype=np.int8)
+        results = []
+        for alleles in [lists, padded(lists), padded(lists).astype(str)]:
+            tts = tsls.TreeSequence(ts, alleles=alleles)
+            np.testing.assert_array_equal(tts.num_alleles, [len(r) for r in lists])
+            fm = tsls.Hmm(tts, np.full(m, 0.01), np.full(m, 0.01)).forward_matrix(h)
+            results.append(fm.log_likelihood)
+        assert results[0] == results[1] == results[2]
+
+    def test_global_and_default_num_alleles(self):
+        ts = single_tree_ts()
+        assert list(tsls.TreeSequence(ts, alleles=ALLELES).num_alleles) == [5] * 4
+        # Numbered from the tree sequence: the number of distinct states
+        assert list(tsls.TreeSequence(ts).num_alleles) == [2, 2, 4, 4]
+
+    def test_unseen_allele_is_mismatch(self):
+        # A haplotype allele that is in a site's list but not in the tree
+        # sequence there mismatches every node, as tsinfer needs for the
+        # focal sites of an ancestor.
+        tables = tskit.Tree.generate_balanced(2, span=4).tree_sequence.dump_tables()
+        add_mutations(tables, [(1, "A", [(0, "C")]), (2, "A", [])])
+        ts = finalise(tables)
+        tts = tsls.TreeSequence(ts, alleles=[["A", "C", "G"], ["A", "T"]])
+        am = tsls.Hmm(tts, np.full(2, 1e-3), np.full(2, 1e-3))
+        match = np.zeros(2, dtype=np.int8)
+        _, _, parent = am.find_path(np.array([2, 1], dtype=np.int8), 0, 2, match)
+        assert list(match) == [0, 0]
+        with pytest.raises(ValueError, match="Haplotype allele"):
+            am.find_path(np.array([3, 1], dtype=np.int8), 0, 2, match)
+
+    def test_num_alleles_sets_mismatch_odds(self):
+        # The forward likelihood of a haplotype that mismatches everything
+        # at a site depends on the number of alleles there.
+        tables = tskit.Tree.generate_balanced(2, span=4).tree_sequence.dump_tables()
+        add_mutations(tables, [(1, "A", [(0, "C")])])
+        ts = finalise(tables)
+        mu = 0.01
+        h = np.array([2], dtype=np.int8)
+        lls = []
+        for alleles in [[["A", "C", "G"]], [["A", "C", "G", "T", "-"]]]:
+            am = tsls.Hmm(ts, np.full(1, 0.1), np.full(1, mu), alleles=alleles)
+            lls.append(am.forward_matrix(h).log_likelihood)
+        # Every node (all of which are in the tree) mismatches, so the
+        # likelihood is that of a mismatch.
+        assert lls[0] == pytest.approx(np.log(mu))
+        assert lls[1] == pytest.approx(lls[0])
+        # A match costs more with more alleles
+        h = np.array([0], dtype=np.int8)
+        lls = []
+        for alleles in [[["A", "C", "G"]], [["A", "C", "G", "T", "-"]]]:
+            am = tsls.Hmm(ts, np.full(1, 0.1), np.full(1, mu), alleles=alleles)
+            lls.append(am.forward_matrix(h).log_likelihood)
+        assert lls[0] > lls[1]
+
+    @pytest.mark.parametrize(
+        ("alleles", "match"),
+        [
+            # Padding before an allele
+            ([["A", "", "C"], ["A"], ["A"], ["A"]], "padding"),
+            # Wrong number of sites
+            ([["G", "T"]], "one row for each"),
+            # Duplicates within a site
+            ([["G", "T", "G"], ["A", "C"], ["T", "A", "C"], ["C", "G"]], "unique"),
+            # A state missing from a site's list
+            ([["G"], ["A", "C"], ["T", "A", "C", "G"], ["C", "G", "A", "T"]], "not in"),
+        ],
+    )
+    def test_errors(self, alleles, match):
+        ts = single_tree_ts()
+        with pytest.raises(ValueError, match=match):
+            tsls.TreeSequence(ts, alleles=alleles)
+
+    def test_too_many_alleles(self):
+        ts = single_tree_ts()
+        alleles = [[f"x{k}" for k in range(127)] + ["G", "T"]] * ts.num_sites
+        with pytest.raises(ValueError, match="Too many"):
+            tsls.TreeSequence(ts, alleles=alleles)
+
+
+def test_match_outside_window_is_missing():
+    ts = two_tree_ts()
+    m = ts.num_sites
+    am = tsls.Hmm(ts, np.full(m, 0.01), np.full(m, 0.01), alleles=ALLELES)
+    match = np.zeros(m, dtype=np.int8)
+    am.find_path(np.zeros(m, dtype=np.int8), 2, 4, match)
+    assert np.all(match[:2] == -1)
+    assert np.all(match[4:] == -1)
+    assert np.all(match[2:4] >= 0)
+    _, matched, _ = am.viterbi_matrix(np.zeros(m, dtype=np.int8), 1, 3)
+    assert np.all(matched[:1] == -1)
+    assert np.all(matched[3:] == -1)

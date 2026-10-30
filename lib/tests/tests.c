@@ -72,6 +72,39 @@ acgt_code(char state)
     return state == 'A' ? 0 : state == 'C' ? 1 : state == 'G' ? 2 : 3;
 }
 
+#define MAX_TEST_SITES 5
+
+/* The same list of alleles at every site, as tsls_index_init takes it */
+typedef struct {
+    const char *alleles[MAX_TEST_SITES * (TSLS_MAX_ALLELES + 1)];
+    tsk_size_t num_alleles[MAX_TEST_SITES];
+} site_alleles_t;
+
+static void
+set_site_alleles(
+    site_alleles_t *self, const char **alleles, tsk_size_t n, tsk_size_t num_sites)
+{
+    tsk_size_t j, k;
+
+    CU_ASSERT_FATAL(num_sites <= MAX_TEST_SITES);
+    CU_ASSERT_FATAL(n <= TSLS_MAX_ALLELES + 1);
+    for (j = 0; j < num_sites; j++) {
+        self->num_alleles[j] = n;
+        for (k = 0; k < n; k++) {
+            self->alleles[j * n + k] = alleles[k % 4];
+        }
+    }
+}
+
+static int
+index_init_acgt(tsls_index_t *index, const tsk_treeseq_t *ts)
+{
+    static site_alleles_t site_alleles;
+
+    set_site_alleles(&site_alleles, acgt, 4, tsk_treeseq_get_num_sites(ts));
+    return tsls_index_init(index, ts, site_alleles.alleles, site_alleles.num_alleles);
+}
+
 static void
 test_allele_encoding(void)
 {
@@ -80,14 +113,21 @@ test_allele_encoding(void)
     tsls_index_t index;
     tsk_size_t j;
     tsk_mutation_t *mutation;
+    site_alleles_t site_alleles;
     const char *too_few[] = { "A", "C" };
+    const char *duplicate[] = { "A", "C", "G", "T", "A" };
     /* Sites are A -> C, G; C -> A; G -> A; A -> T, A; T. Every site has at
      * least two alleles. */
     tsk_size_t site_num_alleles[] = { 3, 2, 2, 2, 2 };
+    /* A different list at each site, including alleles that aren't in the
+     * tree sequence, and a site with one allele. */
+    const char *per_site[] = { "G", "C", "A", "C", "A", "T", "G", "A", "A", "T", "T" };
+    tsk_size_t per_site_num_alleles[] = { 3, 3, 2, 2, 1 };
+    allele_t per_site_ancestral[] = { 2, 0, 0, 0, 0 };
 
     build_forest_ts(&ts, true);
 
-    ret = tsls_index_init(&index, &ts, acgt, 4);
+    ret = index_init_acgt(&index, &ts);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     for (j = 0; j < tsk_treeseq_get_num_sites(&ts); j++) {
         CU_ASSERT_EQUAL(index.num_alleles[j], 4);
@@ -108,8 +148,8 @@ test_allele_encoding(void)
     }
     tsls_index_free(&index);
 
-    /* Per-site encoding, as in tskit */
-    ret = tsls_index_init(&index, &ts, NULL, 0);
+    /* Numbered from the tree sequence, as in tskit */
+    ret = tsls_index_init(&index, &ts, NULL, NULL);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     for (j = 0; j < tsk_treeseq_get_num_sites(&ts); j++) {
         CU_ASSERT_EQUAL(index.num_alleles[j], site_num_alleles[j]);
@@ -123,11 +163,34 @@ test_allele_encoding(void)
     }
     tsls_index_free(&index);
 
-    ret = tsls_index_init(&index, &ts, too_few, 2);
+    /* A different list of alleles at each site */
+    ret = tsls_index_init(&index, &ts, per_site, per_site_num_alleles);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    for (j = 0; j < tsk_treeseq_get_num_sites(&ts); j++) {
+        CU_ASSERT_EQUAL(index.num_alleles[j], per_site_num_alleles[j]);
+        CU_ASSERT_EQUAL(index.ancestral_state[j], per_site_ancestral[j]);
+    }
+    /* Site 0's mutations are to C (1) and G (0) */
+    for (j = 0; j < ts.site_mutations_length[0]; j++) {
+        mutation = &ts.site_mutations[0][j];
+        CU_ASSERT_EQUAL(index.mutation_derived_state[mutation->id],
+            mutation->derived_state[0] == 'C' ? 1 : 0);
+    }
+    tsls_index_free(&index);
+
+    set_site_alleles(&site_alleles, too_few, 2, tsk_treeseq_get_num_sites(&ts));
+    ret = tsls_index_init(&index, &ts, site_alleles.alleles, site_alleles.num_alleles);
     CU_ASSERT_EQUAL(ret, TSLS_ERR_UNKNOWN_ALLELE);
     tsls_index_free(&index);
 
-    ret = tsls_index_init(&index, &ts, acgt, TSLS_MAX_ALLELES + 1);
+    set_site_alleles(&site_alleles, duplicate, 5, tsk_treeseq_get_num_sites(&ts));
+    ret = tsls_index_init(&index, &ts, site_alleles.alleles, site_alleles.num_alleles);
+    CU_ASSERT_EQUAL(ret, TSLS_ERR_DUPLICATE_ALLELE);
+    tsls_index_free(&index);
+
+    set_site_alleles(
+        &site_alleles, acgt, TSLS_MAX_ALLELES + 1, tsk_treeseq_get_num_sites(&ts));
+    ret = tsls_index_init(&index, &ts, site_alleles.alleles, site_alleles.num_alleles);
     CU_ASSERT_EQUAL(ret, TSLS_ERR_TOO_MANY_ALLELES);
     tsls_index_free(&index);
 
@@ -151,7 +214,7 @@ test_forest_matching(void)
     double total;
 
     build_forest_ts(&ts, false);
-    ret = tsls_index_init(&index, &ts, acgt, 4);
+    ret = index_init_acgt(&index, &ts);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = tsls_hmm_alloc(&hmm, &index, rho, mu, DBL_MIN, TSLS_EXTENDED_CHECKS);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
@@ -246,7 +309,7 @@ test_bad_inputs(void)
     size_t path_length;
 
     build_forest_ts(&ts, false);
-    ret = tsls_index_init(&index, &ts, acgt, 4);
+    ret = index_init_acgt(&index, &ts);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = tsls_hmm_alloc(&hmm, &index, rho, zero_mu, DBL_MIN, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);

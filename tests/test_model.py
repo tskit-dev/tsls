@@ -304,7 +304,7 @@ class TestPruneThreshold:
     def test_bad_threshold(self, threshold):
         ts = EXAMPLES["single_tree"]()
         m = ts.num_sites
-        with pytest.raises(tsls.LibraryError, match="prune threshold"):
+        with pytest.raises(ValueError, match="prune threshold"):
             tsls.Hmm(
                 ts,
                 np.full(m, 0.01),
