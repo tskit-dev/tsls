@@ -1258,13 +1258,6 @@ tsls_hmm_find_listed(tsls_hmm_t *self, tsk_id_t u)
     return a;
 }
 
-/* Returns the likelihood inherited by node u. */
-static inline double
-tsls_hmm_get_inherited_likelihood(tsls_hmm_t *self, tsk_id_t u)
-{
-    return self->likelihood[tsls_hmm_find_listed(self, u)].value;
-}
-
 /* Remove the edge from p to c from the tree, and if update_likelihoods is
  * true make sure that the child keeps its likelihood. Nodes that are
  * isolated after removing the edge are added to the isolated list; they
