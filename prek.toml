@@ -9,6 +9,7 @@ files = { glob = [
     "_tslsmodule.c",
     "tests/**",
     "verification/**",
+    "benchmarking/**",
     "*.toml",
     "docs/**",
     "lib/*.[c,h]",

@@ -1,0 +1,35 @@
+[project]
+name = "tsls-benchmarking"
+version = "0.0.0"
+description = "Benchmarks for tsls."
+requires-python = ">=3.11"
+dependencies = [
+    "click",
+    "numpy>=2",
+    "pandas",
+    "tqdm",
+    "tskit>=1.0.0",
+    "tszip",
+    "tsls",
+    "zarr>=3.1",
+    "tabulate>=0.10.0",
+]
+
+[dependency-groups]
+test = [
+    "msprime",
+    "pytest",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+tsls = { path = "..", editable = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 89

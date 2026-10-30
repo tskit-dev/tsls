@@ -226,3 +226,8 @@ verification/tmp__NOBACKUP__/
 
 # Written by setuptools_scm
 tsls/_version.py
+
+# Benchmark data and results
+benchmarking/data/
+benchmarking/results/
+benchmarking/callgrind/
