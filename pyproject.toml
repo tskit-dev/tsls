@@ -1,18 +1,24 @@
 [build-system]
 requires = [
     "setuptools>=42",
+    "setuptools_scm",
     "wheel",
     "numpy>=2"
 ]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools_scm]
+write_to = "tsls/_version.py"
+local_scheme = "no-local-version"
+
 [project]
 name = "tsls"
-version = "0.0.1.dev0"
+dynamic = ["version"]
 authors = [
     {name = "Tskit Developers", email = "admin@tskit.dev"},
 ]
 description = "The Li and Stephens HMM on a tree sequence."
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 classifiers = [
@@ -22,7 +28,17 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+keywords = [
+    "population genetics",
+    "tree sequence",
+    "ancestral recombination graph",
+    "Li and Stephens",
+    "hidden Markov model",
 ]
 dependencies = [
     "numpy>=2",
@@ -31,12 +47,33 @@ dependencies = [
 
 [project.urls]
 "Source Code" = "https://github.com/tskit-dev/tsls/"
+"Bug Tracker" = "https://github.com/tskit-dev/tsls/issues"
 
 [dependency-groups]
 test = [
     "msprime",
     "pytest",
+    "pytest-cov",
     "pytest-xdist>=3.8.0",
+]
+
+# Fully pin lint requirements for determinism.
+lint = [
+    "clang-format==21.1.8",
+    "ruff==0.15.1",
+    "prek==0.3.3",
+    "zizmor==1.26.1",
+]
+
+packaging = [
+  "twine",
+  "validate-pyproject[all]"
+]
+
+dev = [
+    {include-group = "lint"},
+    {include-group = "test"},
+    {include-group = "packaging"},
 ]
 
 [tool.setuptools]
@@ -49,6 +86,7 @@ pythonpath = ["tests"]
 
 [tool.ruff]
 target-version = "py311"
+extend-exclude = ["git-submodules"]
 line-length = 89
 indent-width = 4
 

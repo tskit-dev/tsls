@@ -7,7 +7,7 @@ from setuptools import Extension, setup
 IS_WINDOWS = platform.system() == "Windows"
 
 libdir = "lib"
-tskroot = os.path.join("..", "git-submodules", "tskit", "c")
+tskroot = os.path.join("git-submodules", "tskit", "c")
 tskdir = os.path.join(tskroot, "tskit")
 kasdir = os.path.join(tskroot, "subprojects", "kastore")
 includes = ["lwt_interface", libdir, tskroot, tskdir, kasdir]
@@ -25,7 +25,6 @@ tsk_source_files = [
     "genotypes.c",
     "stats.c",
     "convert.c",
-    "haplotype_matching.c",
 ]
 kas_source_files = ["kastore.c"]
 

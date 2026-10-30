@@ -179,9 +179,9 @@ class Hmm(_tsls.Hmm):
     nodes less than f times the maximum to likelihood_threshold, in Viterbi,
     forward and backward. This is approximate (pruning relative to the
     switch odds, f = c q with c <= 1, was accurate on the sc2ts and tsinfer
-    benchmarks); in Viterbi it is the same as a prune threshold of f. If ``count_distinct``
-    is True, the mean number of distinct values per site in Viterbi is
-    recorded in ``mean_num_distinct_values``.
+    benchmarks); in Viterbi it is the same as a prune threshold of f. If
+    ``count_distinct`` is True, the mean number of distinct values per site
+    in Viterbi is recorded in ``mean_num_distinct_values``.
 
     Viterbi works with costs and keeps each node's cost as of the site it
     last changed (see docs/likelihood_model.md, "Deferred Viterbi costs").
