@@ -231,3 +231,7 @@ tsls/_version.py
 benchmarking/data/
 benchmarking/results/
 benchmarking/callgrind/
+
+# Downloaded by meson for the C tests
+lib/subprojects/packagecache/
+lib/subprojects/tskit-*/

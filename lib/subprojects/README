@@ -1,0 +1,3 @@
+This wrap file is only used by meson to compile the C library for the C
+tests. The Python module doesn't use it: it is built from the tskit git
+submodule (git-submodules/tskit), which should be at the same C release.

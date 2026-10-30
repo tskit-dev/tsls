@@ -1,7 +1,7 @@
 project('tsls', 'c', default_options: ['c_std=c11'])
 
-# lib/subprojects/tskit is a symlink to the tskit C library in the
-# git-submodules/tskit submodule at the root of the repository.
+# The tskit C library is downloaded with the wrap file in subprojects/
+# (see subprojects/README).
 tskit_proj = subproject('tskit')
 tskit_dep = tskit_proj.get_variable('tskit_dep')
 
