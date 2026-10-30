@@ -3,6 +3,7 @@ Tests for the tsls HMM engine on small hand-built examples, compared with
 the dense implementation in dense.py.
 """
 
+import msprime
 import numpy as np
 import pytest
 import tskit
@@ -1269,3 +1270,281 @@ class TestNodeStatistics:
         h = np.zeros(m, dtype=np.int8)
         am.find_path(h, 10, 20, np.zeros(m, dtype=np.int8))
         assert am.max_num_values >= am.mean_num_values > 0
+
+
+# The following tests are adapted from tskit's haplotype matching tests
+# (python/tests/test_haplotype_matching.py and c/tests/test_haplotype_matching.c),
+# from before the LsHmm engine was removed from tskit.
+
+
+def check_against_dense(ts, h, rho, mu, *, rtol=1e-12):
+    """
+    Check the Viterbi path and the forward and backward matrices for the
+    specified haplotype against the dense implementation, with constant
+    rates rho and mu, and return the path by site.
+    """
+    A, present, continuous = dense.node_states(ts, ALLELES)
+    m = ts.num_sites
+    n = ts.num_nodes
+    rho_a = np.full(m, rho)
+    mu_a = np.full(m, mu)
+    am, _ = make_matcher(ts, rho, mu)
+    match = np.zeros(m, dtype=np.int8)
+    left, right, parent = am.find_path(h, 0, m, match)
+    path = path_by_site(ts, left, right, parent)
+    np.testing.assert_array_equal(match, A[np.arange(m), path])
+    value = dense.path_log_likelihood(
+        A, present, continuous, h, rho_a, mu_a, len(ALLELES), n, path
+    )
+    optimum = dense.viterbi_log_likelihood(
+        A, present, continuous, h, rho_a, mu_a, len(ALLELES), n
+    )
+    assert value == pytest.approx(optimum, rel=1e-9)
+
+    fm = am.forward_matrix(h)
+    F, c = dense.forward(A, present, continuous, h, rho_a, mu_a, len(ALLELES), n)
+    np.testing.assert_allclose(fm.normalisation_factor, c, rtol=rtol)
+    np.testing.assert_allclose(fm.decode(), F, rtol=rtol, atol=1e-300)
+    bm = am.backward_matrix(h, fm.normalisation_factor)
+    B = dense.backward(A, present, continuous, h, rho_a, mu_a, len(ALLELES), n, c)
+    np.testing.assert_allclose(bm.decode(), B, rtol=rtol, atol=1e-300)
+    np.testing.assert_allclose(np.sum(F * B, axis=1), 1)
+    return path
+
+
+def unique_mutations_ts():
+    # tskit's balanced tree example, with one mutation on each sample: the
+    # mutation on sample j is at site j.
+    #
+    # 2.00┊    6    ┊
+    #     ┊  ┏━┻━┓  ┊
+    # 1.00┊  4   5  ┊
+    #     ┊ ┏┻┓ ┏┻┓ ┊
+    # 0.00┊ 0 1 2 3 ┊
+    #     0         8
+    tables = tskit.Tree.generate_balanced(4, span=8).tree_sequence.dump_tables()
+    add_mutations(tables, [(2 * j + 1, "A", [(j, "C")]) for j in range(4)])
+    return finalise(tables)
+
+
+class TestUniqueMutationPaths:
+    """
+    Exact Viterbi paths on a balanced tree with a unique mutation on each
+    sample, from tskit's TestSingleBalancedTreeExample. Recombination is
+    much more likely than a mismatch, so the best path switches to avoid
+    every mismatch.
+    """
+
+    rho = 0.1
+    mu = 1e-4
+
+    def path(self, h):
+        ts = unique_mutations_ts()
+        h = np.array(h, dtype=np.int8)
+        return list(check_against_dense(ts, h, self.rho, self.mu))
+
+    @pytest.mark.parametrize("j", range(4))
+    def test_single_sample(self, j):
+        h = [0, 0, 0, 0]
+        h[j] = 1
+        assert self.path(h) == [j] * 4
+
+    @pytest.mark.parametrize("j", [1, 2])
+    def test_single_sample_missing_flanks(self, j):
+        h = [-1, 0, 0, -1]
+        h[j] = 1
+        assert self.path(h) == [j] * 4
+
+    def test_switch_at_every_site(self):
+        assert self.path([1, 1, 1, 1]) == [0, 1, 2, 3]
+
+    def test_missing_flanks(self):
+        # Sites 0 and 3 are copied from the samples of sites 1 and 2, since
+        # copying anything else there needs another switch.
+        assert self.path([-1, 1, 1, -1]) == [1, 1, 2, 2]
+
+    def test_missing_middle(self):
+        # One switch from sample 0 to sample 3, which can be at any of the
+        # sites 1 to 3: we only require one switch.
+        path = self.path([1, -1, -1, 1])
+        assert path[0] == 0
+        assert path[-1] == 3
+        assert np.sum(np.diff(path) != 0) == 1
+
+
+def mirror(ts):
+    """
+    Return ts with the coordinates reversed: a site at position x moves to
+    L - 1 - x (so integer positions stay in [0, L)), and an edge [l, r)
+    moves to [L - r, L - l). Sites stay at integer positions only if the
+    original positions are integers.
+    """
+    L = ts.sequence_length
+    tables = ts.dump_tables()
+    edges = tables.edges
+    left = edges.left.copy()
+    edges.left = L - edges.right
+    edges.right = L - left
+    sites = tables.sites
+    sites.position = L - 1 - sites.position
+    tables.sort()
+    tables.build_index()
+    tables.compute_mutation_parents()
+    return tables.tree_sequence()
+
+
+class TestMirroring:
+    """
+    The HMM is reversible: matching the reversed haplotype against the
+    mirrored tree sequence gives the same Viterbi optimum and posteriors
+    (reversed). From tskit's TestMirroringHap.
+
+    The likelihoods are the same apart from the initial probability, which
+    depends on the first site: the HMM starts from the uniform distribution
+    over all n nodes, and recombines at the first site too, so each node in
+    the tree there starts with probability (1 - r + r P / n) / n, where P
+    is the number of nodes in the tree at the first site.
+    """
+
+    def examples(self):
+        for name in ["single_tree", "two_trees", "forest", "isolated_root"]:
+            ts = EXAMPLES[name]()
+            if np.all(ts.sites_position == np.floor(ts.sites_position)):
+                yield ts
+
+    @pytest.mark.parametrize(("rho", "mu"), PARAMS)
+    def test_forward_backward(self, rho, mu):
+        for ts in self.examples():
+            mts = mirror(ts)
+            A, present, _ = dense.node_states(ts, ALLELES)
+            m = ts.num_sites
+            n = ts.num_nodes
+            for h in queries(ts, A, present):
+                posteriors = []
+                log_likelihoods = []
+                for x, hx, P in [
+                    (ts, h, np.sum(present[0])),
+                    (mts, h[::-1].copy(), np.sum(present[-1])),
+                ]:
+                    am, _ = make_matcher(x, rho, mu)
+                    fm = am.forward_matrix(hx)
+                    bm = am.backward_matrix(hx, fm.normalisation_factor)
+                    initial = np.log(1 - rho + rho * P / n)
+                    log_likelihoods.append(fm.log_likelihood - initial)
+                    posteriors.append(fm.decode() * bm.decode())
+                assert log_likelihoods[0] == pytest.approx(log_likelihoods[1], rel=1e-12)
+                np.testing.assert_allclose(
+                    posteriors[0], posteriors[1][::-1], rtol=1e-9, atol=1e-15
+                )
+                assert m == mts.num_sites
+
+    @pytest.mark.parametrize(("rho", "mu"), PARAMS)
+    def test_viterbi(self, rho, mu):
+        for ts in self.examples():
+            mts = mirror(ts)
+            A, present, continuous = dense.node_states(ts, ALLELES)
+            mA, mpresent, mcontinuous = dense.node_states(mts, ALLELES)
+            m = ts.num_sites
+            n = ts.num_nodes
+            rho_a = np.full(m, rho)
+            mu_a = np.full(m, mu)
+            for h in queries(ts, A, present):
+                values = []
+                for x, hx, states in [
+                    (ts, h, (A, present, continuous)),
+                    (mts, h[::-1].copy(), (mA, mpresent, mcontinuous)),
+                ]:
+                    am, _ = make_matcher(x, rho, mu)
+                    match = np.zeros(m, dtype=np.int8)
+                    left, right, parent = am.find_path(hx, 0, m, match)
+                    path = path_by_site(x, left, right, parent)
+                    values.append(
+                        dense.path_log_likelihood(
+                            *states, hx, rho_a, mu_a, len(ALLELES), n, path
+                        )
+                    )
+                assert values[0] == pytest.approx(values[1], rel=1e-9)
+
+
+@pytest.mark.parametrize(("rho", "mu"), PARAMS)
+def test_all_missing(example, rho, mu):
+    # From tskit's LSBase queries, which include a haplotype with every
+    # site missing.
+    ts, _, _, _ = example
+    h = np.full(ts.num_sites, -1, dtype=np.int8)
+    check_against_dense(ts, h, rho, mu)
+
+
+class TestExtremeRates:
+    """
+    Recombination and mismatch probabilities near their limits, from the
+    extreme values in tskit's tests.
+    """
+
+    # With 5 alleles, the mismatch probability must be less than 1 / 5 for
+    # a match to be more likely than a mismatch.
+    @pytest.mark.parametrize("rho", [0.999, 1e-6])
+    @pytest.mark.parametrize("mu", [1e-6, 0.19])
+    def test_against_dense(self, example, rho, mu):
+        ts, A, present, _ = example
+        for h in queries(ts, A, present):
+            check_against_dense(ts, h, rho, mu, rtol=1e-10)
+
+
+def comb_ts(n, num_sites, seed):
+    """
+    Return a comb (caterpillar) tree of n samples with random mutations,
+    which gives many distinct values at each site (as tskit's
+    test_caterpillar_tree_many_values).
+    """
+    rng = np.random.default_rng(seed)
+    ts = tskit.Tree.generate_comb(n, span=num_sites).tree_sequence
+    tables = ts.dump_tables()
+    nodes = np.arange(ts.num_nodes - 1)
+    mutations = []
+    for j in range(num_sites):
+        site_nodes = rng.choice(nodes, size=rng.integers(1, 4), replace=False)
+        site_nodes = site_nodes[np.argsort(-ts.nodes_time[site_nodes])]
+        states = rng.choice(ALLELES[1:], size=len(site_nodes))
+        mutations.append((j, "A", list(zip(site_nodes, states))))
+    add_mutations(tables, mutations)
+    return finalise(tables)
+
+
+@pytest.mark.parametrize("n", [8, 16, 32, 64])
+def test_comb_many_values(n):
+    ts = comb_ts(n, 12, seed=n)
+    A, present, _ = dense.node_states(ts, ALLELES)
+    rng = np.random.default_rng(1)
+    for u in rng.choice(ts.samples(), size=3, replace=False):
+        h = A[:, u].copy()
+        h[rng.integers(0, ts.num_sites)] = 2
+        check_against_dense(ts, h, 0.05, 0.01, rtol=1e-10)
+    fm = make_matcher(ts, 0.05, 0.01)[0].forward_matrix(A[:, 0])
+    # The forward values aren't all compressed into a few nodes
+    assert np.max(np.diff(fm.offsets)) > 4
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+@pytest.mark.parametrize("num_samples", [10, 50])
+def test_msprime_against_dense(seed, num_samples):
+    # As tskit's TestSimulationExamples, with sequences as long as needed
+    # for a few trees and sites.
+    ts = msprime.sim_ancestry(
+        num_samples,
+        ploidy=1,
+        sequence_length=100,
+        recombination_rate=0.01,
+        population_size=1,
+        random_seed=seed,
+    )
+    ts = msprime.sim_mutations(ts, rate=0.1, random_seed=seed)
+    assert ts.num_trees > 1
+    assert ts.num_sites > 5
+    A, present, _ = dense.node_states(ts, ALLELES)
+    rng = np.random.default_rng(seed)
+    held_out = rng.integers(0, ts.num_nodes, size=2)
+    H = [A[:, u] for u in held_out]
+    H.append(rng.integers(0, 4, size=ts.num_sites).astype(np.int8))
+    for h in H:
+        check_against_dense(ts, np.asarray(h, dtype=np.int8), 0.01, 0.01, rtol=1e-10)
