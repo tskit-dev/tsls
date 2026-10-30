@@ -82,6 +82,49 @@ class TestConversions:
     def test_mismatch_odds(self):
         assert tsls.model.mismatch_odds(0.01, 5) == pytest.approx(0.01 / 0.96)
 
+    @pytest.mark.parametrize("mu", [0, 1e-20, 1e-4, 0.0125, 0.1])
+    @pytest.mark.parametrize("num_alleles", [2, 4, 5])
+    def test_mismatch_probability_round_trip(self, mu, num_alleles):
+        e = tsls.model.mismatch_odds(mu, num_alleles)
+        assert tsls.model.mismatch_probability(e, num_alleles) == pytest.approx(mu)
+
+    def test_mismatch_probability_per_site(self):
+        e = np.array([0.01, 0.02])
+        mu = tsls.model.mismatch_probability(e, np.array([4, 5]))
+        np.testing.assert_allclose(mu, [0.01 / 1.03, 0.02 / 1.08])
+
+    def test_bad_mismatch_odds(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            tsls.model.mismatch_probability(-0.1, 4)
+
+    def test_mismatch_probability_other_num_alleles(self):
+        # As in sc2ts with deletions as missing data: 4 alleles with mu
+        # gives the same Viterbi paths and posteriors as 5 alleles with the
+        # mismatch probability that has the same odds.
+        ts = EXAMPLES["two_trees"]()
+        m = ts.num_sites
+        mu4 = 0.0125
+        mu5 = tsls.model.mismatch_probability(tsls.model.mismatch_odds(mu4, 4), 5)
+        A, present, _ = dense.node_states(ts, ALLELES)
+        results = []
+        for alleles, mu in [(ALLELES[:4], mu4), (ALLELES, mu5)]:
+            hmm = tsls.Hmm(ts, np.full(m, 0.05), np.full(m, mu), alleles=alleles)
+            paths = []
+            posteriors = []
+            for h in queries(ts, A, present):
+                h = np.where(h == 4, -1, h).astype(np.int8)
+                match = np.zeros(m, dtype=np.int8)
+                paths.append(hmm.find_path(h, 0, m, match))
+                F = hmm.forward_matrix(h)
+                B = hmm.backward_matrix(h, F.normalisation_factor)
+                posteriors.append(F.decode() * B.decode())
+            results.append((paths, posteriors))
+        for a, b in zip(results[0][0], results[1][0]):
+            for x, y in zip(a, b):
+                np.testing.assert_array_equal(x, y)
+        for a, b in zip(results[0][1], results[1][1]):
+            np.testing.assert_allclose(a, b, rtol=1e-12)
+
     def test_path_threshold_constant(self):
         e = tsls.model.mismatch_odds(0.01, 5)
         q = tsls.model.switch_odds(0.02, 100)

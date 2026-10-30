@@ -73,6 +73,24 @@ def mismatch_odds(mismatch, num_alleles):
     return mu / (1 - (np.asarray(num_alleles) - 1) * mu)
 
 
+def mismatch_probability(mismatch_odds, num_alleles):
+    """
+    Return the mismatch probability mu that gives the specified mismatch
+    odds e with A = num_alleles alleles, the inverse of mismatch_odds:
+    mu = e / (1 + (A - 1) e). The odds must be non-negative.
+
+    This gives the same emission model with a different number of alleles.
+    For example, sc2ts matches with 4 alleles when deletions are treated as
+    missing data, but the tree sequence still has 5 (ACGT-): the mismatch
+    probability ``mismatch_probability(mismatch_odds(mu, 4), 5)`` with the
+    5 alleles gives the same Viterbi paths and posteriors as mu with 4.
+    """
+    e = np.asarray(mismatch_odds, dtype=float)
+    if np.any(e < 0):
+        raise ValueError("Mismatch odds must be non-negative")
+    return e / (1 + (np.asarray(num_alleles) - 1) * e)
+
+
 def _largest_product(odds, k):
     """
     Return the smallest product of k of the specified odds, the odds of the
