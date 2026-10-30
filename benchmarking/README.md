@@ -238,19 +238,27 @@ or worse one.
 | samples, map, mu = 1e-20 | 6 | 14.2 s | 2.28 s | 0.161 | 384 | 53 | 6/0/0/0 |
 | samples, map, mu = 1e-8 | 6 | 13 s | 1.98 s | 0.152 | 448 | 53 | 1/5/0/0 |
 | sc2ts 100k, k = 1 | 10 | 3.63 s | 19 ms | 0.005 | 640 | 4 | 4/2/3/1 |
+| sc2ts 100k, exact | 10 | 6.36 s | 23 ms | 0.004 | 960 | 4 | 8/2/0/0 |
+| sc2ts 300k, exact | 4 | 13.5 s | 85 ms | 0.006 | 1792 | 10 | 3/1/0/0 |
+| full sc2ts ARG, k = 1 | 3 | 69.1 s | 2.55 s | 0.037 | 2368 | 104 | 3/0/0/0 |
 
-The sc2ts 100k (exact) and 300k workloads and the full sc2ts ARG are still
-running, and will be added when they finish.
+The full sc2ts ARG (3.4M nodes) was run once per query, rather than three
+times.
 
 - On the tsinfer workloads, tsls takes 0.48-0.70 of tsinfer-hmm's time on
   ancestors, 0.32 on samples with constant recombination, and 0.15-0.16
   under the HapMap II recombination map, with 6-16 times less memory. The
   paths are tsinfer-hmm's apart from a few ties.
-- On sc2ts, tsls is about 190 times faster on the 100k sub-ARG with the
-  k = 1 threshold (19 ms against 3.6 s per query), with 4 MiB of memory
-  against 640 MiB. With a threshold, neither engine is guaranteed to find
-  the optimal path when it costs more than the threshold allows:
-  tsinfer-hmm floors the normalised values, so nodes with different
-  numbers of mismatches can tie (its path was worse for 3 queries), and
-  tsls prunes them (its path was worse for 1). sc2ts reruns such queries
-  without a threshold.
+- On the sc2ts sub-ARGs, tsls is 160-280 times faster than tsinfer-hmm
+  (19-85 ms against 3.6-13.5 s per query), with 4-10 MiB of memory against
+  640-1,792 MiB. On the full ARG it is 27 times faster (2.6 s against
+  69 s per query), with 104 MiB against 2.3 GiB. The gain is smaller there
+  because the full ARG's trees span fewer sites, so fewer sites can be
+  processed sparsely.
+- With the k = 1 threshold, neither engine is guaranteed to find the
+  optimal path when it costs more than the threshold allows: tsinfer-hmm
+  floors the normalised values, so nodes with different numbers of
+  mismatches can tie (its path was worse for 3 queries on the 100k
+  sub-ARG), and tsls prunes them (its path was worse for 1). sc2ts reruns
+  such queries without a threshold. Exact matching gives the same paths
+  apart from ties.
