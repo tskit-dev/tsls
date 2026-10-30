@@ -269,7 +269,7 @@ compressed_matrix_alloc(compressed_matrix_t *self, size_t num_sites, size_t bloc
         ret = TSLS_ERR_NO_MEMORY;
         goto out;
     }
-    if (tsi_blkalloc_init(&self->allocator, TSK_MAX(block_size, 1024)) != 0) {
+    if (tsls_blockalloc_init(&self->allocator, TSK_MAX(block_size, 1024)) != 0) {
         ret = TSLS_ERR_NO_MEMORY;
         goto out;
     }
@@ -285,7 +285,7 @@ compressed_matrix_free(compressed_matrix_t *self)
     tsi_safe_free(self->nodes);
     tsi_safe_free(self->values);
     tsi_safe_free(self->flags);
-    tsi_blkalloc_free(&self->allocator);
+    tsls_blockalloc_free(&self->allocator);
     return 0;
 }
 
@@ -323,7 +323,7 @@ compressed_matrix_store_site(compressed_matrix_t *self, tsk_id_t site,
     int8_t *restrict flags_out = NULL;
 
     if (with_flags) {
-        flags_out = tsi_blkalloc_get(
+        flags_out = tsls_blockalloc_get(
             &self->allocator, aligned_size((size_t) num_values * sizeof(int8_t)));
         if (flags_out == NULL) {
             ret = TSLS_ERR_NO_MEMORY;
@@ -334,9 +334,9 @@ compressed_matrix_store_site(compressed_matrix_t *self, tsk_id_t site,
         }
     }
 
-    values_out = tsi_blkalloc_get(
+    values_out = tsls_blockalloc_get(
         &self->allocator, aligned_size((size_t) num_values * sizeof(double)));
-    nodes_out = tsi_blkalloc_get(
+    nodes_out = tsls_blockalloc_get(
         &self->allocator, aligned_size((size_t) num_values * sizeof(tsk_id_t)));
     if (values_out == NULL || nodes_out == NULL) {
         ret = TSLS_ERR_NO_MEMORY;
@@ -369,11 +369,11 @@ compressed_matrix_store_costs(compressed_matrix_t *self, tsk_id_t site,
     double *restrict values_out;
     int8_t *restrict flags_out;
 
-    flags_out = tsi_blkalloc_get(
+    flags_out = tsls_blockalloc_get(
         &self->allocator, aligned_size((size_t) num_values * sizeof(int8_t)));
-    values_out = tsi_blkalloc_get(
+    values_out = tsls_blockalloc_get(
         &self->allocator, aligned_size((size_t) num_values * sizeof(double)));
-    nodes_out = tsi_blkalloc_get(
+    nodes_out = tsls_blockalloc_get(
         &self->allocator, aligned_size((size_t) num_values * sizeof(tsk_id_t)));
     if (flags_out == NULL || values_out == NULL || nodes_out == NULL) {
         ret = TSLS_ERR_NO_MEMORY;
@@ -785,7 +785,7 @@ tsls_hmm_print_state(tsls_hmm_t *self, FILE *out)
         }
         fprintf(out, "\n");
     }
-    tsi_blkalloc_print_state(&self->traceback_allocator, out);
+    tsls_blockalloc_print_state(&self->traceback_allocator, out);
     return 0;
 }
 
@@ -919,7 +919,8 @@ tsls_hmm_alloc(tsls_hmm_t *self, const tsls_index_t *index,
     /* If the traceback allocator is using more than 2GiB of RAM free it, so
      * that other threads can use the memory */
     self->traceback_realloc_size = 2L * 1024L * 1024L * 1024L;
-    if (tsi_blkalloc_init(&self->traceback_allocator, self->traceback_block_size) != 0) {
+    if (tsls_blockalloc_init(&self->traceback_allocator, self->traceback_block_size)
+        != 0) {
         ret = TSLS_ERR_NO_MEMORY;
         goto out;
     }
@@ -976,7 +977,7 @@ tsls_hmm_free(tsls_hmm_t *self)
     tsi_safe_free(self->segment_allele);
     tsi_safe_free(self->max_likelihood_node);
     tsi_safe_free(self->traceback);
-    tsi_blkalloc_free(&self->traceback_allocator);
+    tsls_blockalloc_free(&self->traceback_allocator);
     return 0;
 }
 
@@ -1778,7 +1779,7 @@ tsls_hmm_store_traceback(tsls_hmm_t *self, const tsk_id_t site)
     delta->size = size;
     delta->entries = NULL;
     if (size > 0) {
-        delta->entries = tsi_blkalloc_get(&self->traceback_allocator,
+        delta->entries = tsls_blockalloc_get(&self->traceback_allocator,
             aligned_size((size_t) size * sizeof(traceback_entry_t)));
         if (delta->entries == NULL) {
             ret = TSLS_ERR_NO_MEMORY;
@@ -2979,14 +2980,14 @@ tsls_hmm_reset_traceback(tsls_hmm_t *self)
     int ret = 0;
 
     if (self->traceback_allocator.total_size > self->traceback_realloc_size) {
-        tsi_blkalloc_free(&self->traceback_allocator);
-        if (tsi_blkalloc_init(&self->traceback_allocator, self->traceback_block_size)
+        tsls_blockalloc_free(&self->traceback_allocator);
+        if (tsls_blockalloc_init(&self->traceback_allocator, self->traceback_block_size)
             != 0) {
             ret = TSLS_ERR_NO_MEMORY;
             goto out;
         }
     } else {
-        tsi_blkalloc_reset(&self->traceback_allocator);
+        tsls_blockalloc_reset(&self->traceback_allocator);
     }
     self->total_traceback_size = 0;
     self->total_delta_size = 0;

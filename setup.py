@@ -17,7 +17,7 @@ includes = [lwtdir, libdir, tskroot, tskdir, kasdir]
 tsls_source_files = [
     "hmm.c",
     "err.c",
-    "tsi_blkalloc.c",
+    "blockalloc.c",
 ]
 # The HMM works on a tsk_treeseq_t, so we need all of tskit.
 tsk_source_files = [

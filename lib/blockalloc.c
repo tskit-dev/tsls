@@ -9,7 +9,7 @@
 #include <stdio.h>
 
 void
-tsi_blkalloc_print_state(tsi_blkalloc_t *self, FILE *out)
+tsls_blockalloc_print_state(tsls_blockalloc_t *self, FILE *out)
 {
     fprintf(out, "Block allocator%p::\n", (void *) self);
     fprintf(out, "\ttop = %lld\n", (long long) self->top);
@@ -20,7 +20,7 @@ tsi_blkalloc_print_state(tsi_blkalloc_t *self, FILE *out)
 }
 
 int WARN_UNUSED
-tsi_blkalloc_reset(tsi_blkalloc_t *self)
+tsls_blockalloc_reset(tsls_blockalloc_t *self)
 {
     int ret = 0;
 
@@ -31,11 +31,11 @@ tsi_blkalloc_reset(tsi_blkalloc_t *self)
 }
 
 int WARN_UNUSED
-tsi_blkalloc_init(tsi_blkalloc_t *self, size_t chunk_size)
+tsls_blockalloc_init(tsls_blockalloc_t *self, size_t chunk_size)
 {
     int ret = 0;
 
-    tsk_memset(self, 0, sizeof(tsi_blkalloc_t));
+    tsk_memset(self, 0, sizeof(tsls_blockalloc_t));
     if (chunk_size < 1) {
         ret = TSK_ERR_BAD_PARAM_VALUE;
         goto out;
@@ -63,7 +63,7 @@ out:
 }
 
 void *WARN_UNUSED
-tsi_blkalloc_get(tsi_blkalloc_t *self, size_t size)
+tsls_blockalloc_get(tsls_blockalloc_t *self, size_t size)
 {
     void *ret = NULL;
     void *p;
@@ -97,7 +97,7 @@ out:
 }
 
 void
-tsi_blkalloc_free(tsi_blkalloc_t *self)
+tsls_blockalloc_free(tsls_blockalloc_t *self)
 {
     size_t j;
 

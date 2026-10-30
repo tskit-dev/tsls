@@ -55,13 +55,13 @@ typedef struct {
     size_t total_allocated;        /* the total number of bytes allocated. */
     size_t num_chunks;             /* the number of memory chunks. */
     char **mem_chunks;             /* the memory chunks */
-} tsi_blkalloc_t;
+} tsls_blockalloc_t;
 
-extern void tsi_blkalloc_print_state(tsi_blkalloc_t *self, FILE *out);
-extern int tsi_blkalloc_reset(tsi_blkalloc_t *self);
-extern int tsi_blkalloc_init(tsi_blkalloc_t *self, size_t chunk_size);
-extern void *tsi_blkalloc_get(tsi_blkalloc_t *self, size_t size);
-extern void tsi_blkalloc_free(tsi_blkalloc_t *self);
+extern void tsls_blockalloc_print_state(tsls_blockalloc_t *self, FILE *out);
+extern int tsls_blockalloc_reset(tsls_blockalloc_t *self);
+extern int tsls_blockalloc_init(tsls_blockalloc_t *self, size_t chunk_size);
+extern void *tsls_blockalloc_get(tsls_blockalloc_t *self, size_t size);
+extern void tsls_blockalloc_free(tsls_blockalloc_t *self);
 
 /* A node's Viterbi state before a change (see traceback_delta_t): its
  * cost and the site of its last change, and whether it was listed (the
@@ -100,7 +100,7 @@ typedef struct {
     double **values;
     /* For Viterbi, the recombination_required flag of each node */
     int8_t **flags;
-    tsi_blkalloc_t allocator;
+    tsls_blockalloc_t allocator;
 } compressed_matrix_t;
 
 /* An edge in one of tskit's edge orders, with the one coordinate that
@@ -334,7 +334,7 @@ typedef struct {
     size_t stats_max_values;
     size_t stats_total_updated;
     size_t site_num_updated;
-    tsi_blkalloc_t traceback_allocator;
+    tsls_blockalloc_t traceback_allocator;
     size_t total_traceback_size;
     /* The total number of entries in the traceback deltas */
     size_t total_delta_size;
