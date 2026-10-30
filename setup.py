@@ -10,7 +10,9 @@ libdir = "lib"
 tskroot = os.path.join("git-submodules", "tskit", "c")
 tskdir = os.path.join(tskroot, "tskit")
 kasdir = os.path.join(tskroot, "subprojects", "kastore")
-includes = ["lwt_interface", libdir, tskroot, tskdir, kasdir]
+# Not the lwt_interface symlink, which isn't a link in checkouts on Windows
+lwtdir = os.path.join("git-submodules", "tskit", "python", "lwt_interface")
+includes = [lwtdir, libdir, tskroot, tskdir, kasdir]
 
 tsls_source_files = [
     "hmm.c",

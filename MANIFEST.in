@@ -1,4 +1,4 @@
-include lwt_interface/*.h
+include git-submodules/tskit/python/lwt_interface/*.h
 include lib/*.h
 include git-submodules/tskit/c/*.h
 include git-submodules/tskit/c/tskit/*.h

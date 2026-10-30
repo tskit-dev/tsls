@@ -35,5 +35,4 @@ jobs:
     strategy:
       matrix:
         python: [ "3.11", "3.14" ]
-        # The C code uses GCC/Clang builtins, so Windows isn't supported yet.
-        os: [ macos-latest, ubuntu-24.04 ]
+        os: [ macos-latest, ubuntu-24.04, windows-latest ]

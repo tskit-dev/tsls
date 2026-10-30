@@ -44,15 +44,33 @@
 #if defined(__linux__)
 #include <sys/mman.h>
 #endif
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 /* For the innermost helpers, which GCC doesn't always inline. Inlining
  * tsls_hmm_coalesce_likelihoods also specialises it for its constant
  * check_recombination_required argument. */
-#ifdef __GNUC__
+#if defined(__GNUC__)
 #define ALWAYS_INLINE inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+#define ALWAYS_INLINE __forceinline
 #else
 #define ALWAYS_INLINE inline
 #endif
+
+/* The number of trailing zero bits of x, which must be nonzero */
+static inline int
+count_trailing_zeros(uint64_t x)
+{
+#if defined(_MSC_VER)
+    unsigned long index;
+    _BitScanForward64(&index, x);
+    return (int) index;
+#else
+    return __builtin_ctzll(x);
+#endif
+}
 
 /* Allocate an array that is accessed at random, such as the per-node arrays
  * walked up the tree. On Linux, large arrays are mapped directly, aligned
@@ -2473,7 +2491,7 @@ tsls_hmm_compact_indexed(tsls_hmm_t *self, tsk_id_t site)
     for (w = 0; w < num_words; w++) {
         bits = self->listed_bits[w];
         while (bits != 0) {
-            x = w * 64 + __builtin_ctzll(bits);
+            x = w * 64 + count_trailing_zeros(bits);
             bits &= bits - 1;
             u = order[x];
             while (top > 0 && subtree_end[stack[top - 1]] <= x) {
@@ -2608,7 +2626,7 @@ tsls_hmm_process_site_indexed(
                     bits &= mask;
                 }
                 while (bits != 0) {
-                    x = w * 64 + __builtin_ctzll(bits);
+                    x = w * 64 + count_trailing_zeros(bits);
                     bits &= bits - 1;
                     u = order[x];
                     matched = tsls_hmm_deferred_cost(self, L[u].value, L[u].site);
