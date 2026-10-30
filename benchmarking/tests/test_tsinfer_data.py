@@ -9,7 +9,7 @@ import tskit
 import tsls
 from click.testing import CliRunner
 
-import engines
+import matcher
 import queries
 import run
 import tsinfer_data
@@ -161,10 +161,9 @@ class TestWindowedHaplotypes:
         assert tsinfer_data.non_missing_window(np.array([-1, -1])) == (0, 2)
 
 
-@pytest.mark.parametrize("name", ["tsinfer", "tsls"])
 class TestTsinferModel:
-    def make_engine(self, ts, name):
-        return engines.ENGINES[name](
+    def make_matcher(self, ts):
+        return matcher.Matcher(
             ts,
             mu=TSINFER_MODEL["mu"],
             rho=TSINFER_MODEL["rho"],
@@ -173,8 +172,8 @@ class TestTsinferModel:
         )
 
     @pytest.mark.parametrize("window", [(0, None), (5, 15), (10, 11)])
-    def test_exact_copy(self, ts, name, window):
-        engine = self.make_engine(ts, name)
+    def test_exact_copy(self, ts, window):
+        m = self.make_matcher(ts)
         start, end = window
         if end is None:
             end = ts.num_sites
@@ -182,7 +181,7 @@ class TestTsinferModel:
         for node in range(ts.num_nodes - 5, ts.num_nodes):
             h = np.full(ts.num_sites, -1, dtype=np.int8)
             h[start:end] = node_haplotypes(ts, [node])[0, start:end]
-            left, right, _, matched, _ = engine.match(h, start, end)
+            left, right, _, matched, _ = m.match(h, start, end)
             # As in tsinfer, a path starting at the first site starts at 0.
             assert left[0] == (0 if start == 0 else positions[start])
             if end < ts.num_sites:
@@ -192,39 +191,35 @@ class TestTsinferModel:
             np.testing.assert_array_equal(left[1:], right[:-1])
             assert np.all(matched[start:end] == h[start:end])
 
-    def test_engines_agree_with_genetic_map(self, ts, name, tmp_path):
+    def test_genetic_map(self, ts, tmp_path):
         path = tmp_path / "map.txt"
         write_genetic_map(path, MAP_ROWS)
-        rho = tsls.model.recombination_probabilities(path, ts.sites_position)
-        engine = engines.ENGINES[name](
-            ts, mu=1e-3, rho=rho, weight_by_n=True, alleles=None
-        )
-        other = engines.ENGINES["tsinfer"](
-            ts, mu=1e-3, rho=rho, weight_by_n=True, alleles=None
-        )
-        np.testing.assert_array_equal(engine.recombination, rho)
+        rho = tsls.recombination_probabilities(path, ts.sites_position)
+        m = matcher.Matcher(ts, mu=1e-3, rho=rho, weight_by_n=True, alleles=None)
+        np.testing.assert_array_equal(m.recombination, rho)
         rng = np.random.default_rng(2)
         for _ in range(5):
             a, b = rng.choice(np.arange(ts.num_nodes - 10, ts.num_nodes), 2)
             G = node_haplotypes(ts, [a, b])
             breakpoint = rng.integers(1, ts.num_sites)
             h = np.concatenate([G[0, :breakpoint], G[1, breakpoint:]])
-            _, _, parent, matched, _ = engine.match(h)
-            _, _, other_parent, other_matched, _ = other.match(h)
-            assert np.sum(matched != h) == np.sum(other_matched != h)
-            assert len(parent) == len(other_parent)
+            left, right, parent, matched, _ = m.match(h)
+            path_h = matcher.path_haplotype(ts, left, right, parent, alleles=None)
+            np.testing.assert_array_equal(matched, path_h)
 
-    def test_engines_agree_on_mismatches(self, ts, name):
-        engine = self.make_engine(ts, name)
-        other = self.make_engine(ts, "tsinfer")
+    def test_mismatches(self, ts):
+        # With mu = 1e-20, three flipped sites are explained by switches or
+        # mismatches, and the matched haplotype is the path's.
+        m = self.make_matcher(ts)
         rng = np.random.default_rng(1)
         for node in range(ts.num_nodes - 5, ts.num_nodes):
             h = node_haplotypes(ts, [node])[0]
             flip = rng.choice(ts.num_sites, size=3, replace=False)
             h[flip] = 1 - h[flip]
-            matched = engine.match(h)[3]
-            other_matched = other.match(h)[3]
-            assert np.sum(matched != h) == np.sum(other_matched != h)
+            left, right, parent, matched, _ = m.match(h)
+            path_h = matcher.path_haplotype(ts, left, right, parent, alleles=None)
+            np.testing.assert_array_equal(matched, path_h)
+            assert np.sum(matched != h) <= 3
 
 
 class TestRunWithModel:
@@ -262,7 +257,7 @@ class TestRunWithModel:
         )
         assert result.exit_code == 0, result.output
         df = pd.read_csv(out)
-        assert list(df.engine.unique()) == ["tsinfer", "tsls"]
+        assert len(df) == 5
         assert np.all(df.status == "ok")
         assert np.all(df.rho == 0.01)
         assert np.all(df.log_likelihood.isna())
@@ -290,7 +285,7 @@ class TestRunWithModel:
         assert np.all(df.recombination_rate == 1e-4)
         assert np.all(df.mu == 1e-3)
         positions = tskit.load(workload / "reference.trees").sites_position
-        rho = tsls.model.recombination_probabilities(1e-4, positions)
+        rho = tsls.recombination_probabilities(1e-4, positions)
         np.testing.assert_allclose(df.rho, np.mean(rho[1:]))
 
     def test_genetic_map(self, workload, tmp_path):
@@ -303,10 +298,6 @@ class TestRunWithModel:
         assert np.all(df.status == "ok")
         assert np.all(df.recombination_rate == str(path))
         assert np.all(df.mu == 1e-20)
-        by_engine = df.set_index(["engine", "query_id"])
-        assert list(by_engine.loc["tsinfer"].num_segments) == list(
-            by_engine.loc["tsls"].num_segments
-        )
 
     def test_recombination_rate_in_model(self, workload, tmp_path):
         path = tmp_path / "map.txt"
@@ -347,20 +338,15 @@ class TestRunWithModel:
         assert result.exit_code != 0
         assert "older run.py" in result.output
 
-    def test_tskit_rejected(self, workload, tmp_path):
-        result = CliRunner().invoke(
-            run.main,
-            [
-                str(workload / "reference.trees"),
-                str(workload),
-                "-o",
-                str(tmp_path / "out.csv"),
-                "-e",
-                "tskit",
-            ],
-        )
-        assert result.exit_code != 0
-        assert "model.json" in result.output
+    def test_resume(self, workload, tmp_path):
+        out = tmp_path / "results.csv"
+        result = self.run(workload, out, "--limit", "2")
+        assert result.exit_code == 0, result.output
+        assert len(pd.read_csv(out)) == 2
+        result = self.run(workload, out)
+        assert result.exit_code == 0, result.output
+        df = pd.read_csv(out)
+        assert list(df.query_id) == [0, 1, 2, 3, 4]
 
     def test_num_mismatches_rejected(self, workload, tmp_path):
         result = CliRunner().invoke(
@@ -431,17 +417,16 @@ class TestTgpChr20p:
         assert resources["group"] == 84
         assert resources["num_haplotypes"] == 144
 
-    @pytest.mark.parametrize("name", ["tsinfer", "tsls"])
-    def test_paths_match_tsinfer(self, workload, name):
+    def test_paths_match_tsinfer(self, workload):
         reference, H, df, _ = workload
         after = tskit.load(DATA_DIR / "partial_ancestor_match" / "after.trees")
-        engine = engines.ENGINES[name](
+        m = matcher.Matcher(
             reference, mu=1e-20, rho=0.01, weight_by_n=True, alleles=None
         )
         for row in df.itertuples():
             assert after.node(row.node).metadata["sample_id"] == row.sample_id
             start, end = queries.query_window(H, row.query_id)
-            left, _, parent, _, _ = engine.match(H[row.query_id], start, end)
+            left, _, parent, _, _ = m.match(H[row.query_id], start, end)
             ((truth_left, truth_parent),) = tsinfer_data.truth_paths(after, [row.node])
             np.testing.assert_array_equal(left, truth_left)
             np.testing.assert_array_equal(parent, truth_parent)

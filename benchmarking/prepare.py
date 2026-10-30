@@ -1,12 +1,11 @@
 """
 Convert an sc2ts ARG into the form used for benchmarking.
 
-Both engines need every allele to be one of A, C, G and T, so we delete
-any site with another state (in practice, deletions coded as "-"). The
-tsinfer engine needs node 0 to be a root with a single child in every
-tree; sc2ts ARGs already have an isolated vestigial node 0 above the
-reference node 1, so we add the 0 -> 1 edge here. This keeps node IDs
-identical for both engines.
+The queries encode every allele as one of A, C, G and T, so we delete any
+site with another state (in practice, deletions coded as "-"). We also add
+the 0 -> 1 edge between the vestigial root and the reference, if it's
+missing, as in tsinfer's trees. (This was needed by the tskit and tsinfer
+engines that tsls was compared with; the benchmark ARG is kept the same.)
 """
 
 import collections

@@ -1,11 +1,11 @@
 """
 Run tsls Viterbi on sc2ts queries, for profiling and comparing builds.
 
-The queries are those of paired.py's sc2ts workloads (a spread of the
+The queries are those of bench.py's sc2ts workloads (a spread of the
 110 scaling queries), matched against an sc2ts ARG with the sc2ts model
 (num_mismatches = 3, weight_by_n=False) and optionally the k-mismatch
 threshold. Prints, for each query, the time, a hash of the path, the
-path's model log likelihood and the engine's statistics, as JSON.
+path's model log likelihood and the HMM's statistics, as JSON.
 
     uv run python profile_sc2ts.py data/subargs/sc2ts_bench_n100000.trees --k 1
 """
@@ -18,8 +18,9 @@ import time
 import click
 import numpy as np
 
-import engines
-import paired
+import bench
+import matcher
+import queries
 
 
 @click.command()
@@ -31,42 +32,26 @@ import paired
 @click.option("--index-min-sites", type=int, default=None)
 def main(ts_path, mismatch_threshold, query_ids, sparse, repeats, index_min_sites):
     path = pathlib.Path(ts_path)
-    workload = paired.Workload(
+    workload = bench.sc2ts_workload(
         "sc2ts",
         str(path.relative_to("data")),
-        "queries_scaling",
         10,
         mismatch_threshold=mismatch_threshold,
-        sc2ts=True,
     )
-    ts, H, ids, model = paired.load_workload(pathlib.Path("data"), workload)
+    ts, H, _, ids, model = bench.load_workload(pathlib.Path("data"), workload)
     if query_ids is not None:
         ids = [int(q) for q in query_ids.split(",")]
-    engine = engines.TslsEngine(
-        ts,
-        mu=model["mu"],
-        rho=model["rho"],
-        weight_by_n=model["weight_by_n"],
-        alleles=model["alleles"],
-        mismatch_threshold=mismatch_threshold,
-    )
-    num_alleles = engines.site_num_alleles(ts, model["alleles"])
+    m = bench.make_matcher(ts, model, mismatch_threshold=mismatch_threshold)
+    num_alleles = matcher.site_num_alleles(ts, model["alleles"])
     mu = np.full(ts.num_sites, model["mu"])
     for qid in ids:
         h = H[qid].astype(np.int8)
-        start, end = paired.queries.query_window(H, qid)
+        start, end = queries.query_window(H, qid)
         for _ in range(repeats):
             kwargs = {}
             if index_min_sites is not None:
                 kwargs["index_min_sites"] = index_min_sites
-            hmm = engines.tsls.Hmm(
-                engine.reference,
-                engine.recombination,
-                engine.mismatch,
-                prune_threshold=engine.prune_threshold,
-                sparse=sparse,
-                **kwargs,
-            )
+            hmm = m.make_hmm(sparse=sparse, **kwargs)
             matched = np.zeros(ts.num_sites, dtype=np.int8)
             before = time.perf_counter()
             left, right, parent = hmm.find_path(h, start, end, matched)
@@ -74,14 +59,14 @@ def main(ts_path, mismatch_threshold, query_ids, sparse, repeats, index_min_site
             digest = hashlib.md5()
             for array in [left, right, parent, matched]:
                 digest.update(np.ascontiguousarray(array).tobytes())
-            log_likelihood = engines.model_path_log_likelihood(
+            log_likelihood = matcher.model_path_log_likelihood(
                 h,
                 matched,
                 left[::-1],
                 ts.sites_position,
                 start,
                 end,
-                rho=engine.recombination,
+                rho=m.recombination,
                 mu=mu,
                 n=ts.num_nodes,
                 num_alleles=num_alleles,

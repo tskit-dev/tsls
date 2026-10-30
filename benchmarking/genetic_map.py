@@ -55,7 +55,7 @@ def write_hapmap(path, chromosome, rows):
 def main(output, chromosome, genetic_map):
     """
     Write the stdpopsim HomSap GENETIC_MAP for CHROMOSOME to OUTPUT in
-    HapMap format, and check that tsls.model.read_genetic_map reads it back.
+    HapMap format, and check that tsls.read_genetic_map reads it back.
     """
     import stdpopsim  # optional dependency
 
@@ -68,7 +68,7 @@ def main(output, chromosome, genetic_map):
 
     positions = np.linspace(0, rate_map.sequence_length, 100_001)
     np.testing.assert_allclose(
-        tsls.model.read_genetic_map(output, positions),
+        tsls.read_genetic_map(output, positions),
         rate_map.get_cumulative_mass(positions),
         rtol=1e-9,
         atol=1e-12,

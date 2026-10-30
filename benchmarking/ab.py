@@ -49,8 +49,15 @@ def run_build(path, script, args, core):
 @click.option("-r", "--rounds", type=int, default=3)
 @click.option("--core", type=int, default=2)
 def main(
-    builds, genetic_map, sc2ts_path, mismatch_threshold, index_min_sites, mu, query_ids,
-    rounds, core
+    builds,
+    genetic_map,
+    sc2ts_path,
+    mismatch_threshold,
+    index_min_sites,
+    mu,
+    query_ids,
+    rounds,
+    core,
 ):
     named = [b.split("=", 1) for b in builds]
     if sc2ts_path is None:

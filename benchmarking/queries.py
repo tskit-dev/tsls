@@ -1,5 +1,5 @@
 """
-Generate query haplotypes for benchmarking the HMM engines.
+Generate query haplotypes for benchmarking tsls.
 
 Queries are haplotypes over the sites of a benchmark ARG, encoded as
 int8 indexes into ALLELES (-1 is missing data). There are two kinds:
@@ -10,7 +10,7 @@ int8 indexes into ALLELES (-1 is missing data). There are two kinds:
   one (A|B) or two (A|B|A) breakpoints, with k random mutations applied.
 
 Each query has a row of metadata recording how it was made, so that
-we can compare the engines' paths with the truth. Node IDs in the
+we can compare the paths with the truth. Node IDs in the
 metadata are original IDs if the ARG is a sub-ARG (see subargs.py).
 """
 

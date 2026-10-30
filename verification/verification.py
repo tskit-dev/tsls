@@ -43,9 +43,7 @@ from matplotlib import pyplot as plt
 
 import tsls
 
-sys.path.insert(
-    0, str(pathlib.Path(__file__).resolve().parent.parent / "tsls" / "tests")
-)
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
 import dense
 
 logger = logging.getLogger(__name__)
@@ -119,8 +117,7 @@ def node_states(ts):
 def hmm_params(k, num_alleles=NUM_ALLELES):
     """
     Return the (mu, rho) tuple for which k mismatches have about the same
-    likelihood as one recombination, with weight_by_n=False (as in sc2ts and
-    benchmarking/engines.py).
+    likelihood as one recombination, with weight_by_n=False (as in sc2ts).
     """
     mu = 0.0125
     denom = mu**k + (1 - (num_alleles - 1) * mu) ** k
@@ -134,7 +131,7 @@ def n_weighted_rho(rho, n):
     Return the rho for weight_by_n=True with the same ratio of switching to a
     given node to staying as rho with weight_by_n=False.
     """
-    return float(tsls.model.recombination_probability(rho, n))
+    return float(tsls.recombination_probability(rho, n))
 
 
 def make_matcher(
@@ -150,7 +147,7 @@ def make_matcher(
 ):
     """
     Return a tsls.Hmm. With weight_by_n=False, rho is the recombination of
-    an engine that does not divide by n, as in tsinfer-hmm and sc2ts. tsls
+    an engine that does not divide by n, as in sc2ts. tsls
     always divides by n, so we give it the recombination probability with
     the same switch odds. This gives the same Viterbi paths and posteriors
     (docs/likelihood_model.md); only the forward log likelihood differs.

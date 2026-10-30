@@ -17,7 +17,7 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
-tsls = { path = "../tsls", editable = true }
+tsls = { path = "..", editable = true }
 
 [tool.ruff]
 line-length = 89

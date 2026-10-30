@@ -1,7 +1,7 @@
 [project]
 name = "tsls-benchmarking"
 version = "0.0.0"
-description = "Benchmarks for the Li and Stephens HMM implementations in tsls."
+description = "Benchmarks for tsls."
 requires-python = ">=3.11"
 dependencies = [
     "click",
@@ -10,8 +10,6 @@ dependencies = [
     "tqdm",
     "tskit>=1.0.0",
     "tszip",
-    "tsinfer-hmm",
-    "tskit-hmm",
     "tsls",
     "zarr>=3.1",
     "tabulate>=0.10.0",
@@ -27,9 +25,7 @@ test = [
 package = false
 
 [tool.uv.sources]
-tsinfer-hmm = { path = "../tsinfer-hmm", editable = true }
-tskit-hmm = { path = "../tskit-hmm", editable = true }
-tsls = { path = "../tsls", editable = true }
+tsls = { path = "..", editable = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

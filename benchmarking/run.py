@@ -1,9 +1,9 @@
 """
-Run the HMM engines over a set of queries and record the results.
+Run tsls over a set of queries and record the results.
 
-Writes one CSV row per (query, engine). Rows are flushed as they are
-written, and an existing output file is resumed by skipping the
-(query, engine) pairs it already contains.
+Writes one CSV row per query. Rows are flushed as they are written, and an
+existing output file is resumed by skipping the queries it already
+contains.
 """
 
 import csv
@@ -18,13 +18,12 @@ import tsls
 import tszip
 from tqdm import tqdm
 
-import engines
+import matcher
 import queries
 import subargs
 
 RESULT_COLUMNS = [
     "query_id",
-    "engine",
     "num_mismatches_param",
     "mismatch_threshold",
     "mu",
@@ -49,9 +48,9 @@ def load_ts(path):
     return tskit.load(path)
 
 
-def completed_pairs(out_path):
+def completed_queries(out_path):
     """
-    Return the set of (query_id, engine) pairs in an existing results file.
+    Return the set of query IDs in an existing results file.
     """
     if not out_path.exists() or out_path.stat().st_size == 0:
         return set()
@@ -60,7 +59,7 @@ def completed_pairs(out_path):
         raise click.ClickException(
             f"{out_path} has different columns; it was made by an older run.py"
         )
-    return set(zip(df.query_id, df.engine))
+    return set(df.query_id)
 
 
 def parse_recombination_rate(value):
@@ -93,13 +92,11 @@ def summarise_match(ts, node_ids, h, result, mu, rho, *, log_likelihood=True):
     """
     Return the result row fields describing the specified match. The log
     likelihood is computed under the unweighted model with the specified
-    parameters, so that it is comparable between engines; it is left empty
+    parameters, so that it is comparable between runs; it is left empty
     if log_likelihood is False. Parents are reported as original node IDs,
     so that they are comparable between sub-ARGs.
     """
     left, right, parent, matched, stats = result
-    if matched is None:
-        matched = engines.path_haplotype(ts, left, right, parent)
     non_missing = h != queries.MISSING
     row = {
         "num_segments": len(parent),
@@ -110,7 +107,7 @@ def summarise_match(ts, node_ids, h, result, mu, rho, *, log_likelihood=True):
         "stats": " ".join(f"{key}={value}" for key, value in stats.items()),
     }
     if log_likelihood:
-        row["log_likelihood"] = engines.path_log_likelihood(
+        row["log_likelihood"] = matcher.path_log_likelihood(
             h, len(parent), matched, mu, rho
         )
     return row
@@ -119,14 +116,6 @@ def summarise_match(ts, node_ids, h, result, mu, rho, *, log_likelihood=True):
 @click.command()
 @click.argument("ts_path", type=click.Path(exists=True, dir_okay=False))
 @click.argument("query_dir", type=click.Path(exists=True, file_okay=False))
-@click.option(
-    "-e",
-    "--engine",
-    "engine_names",
-    type=click.Choice(list(engines.ENGINES)),
-    multiple=True,
-    help="Engines to run (default: all, or tsinfer and tsls with a model.json)",
-)
 @click.option("-o", "--output", type=click.Path(dir_okay=False), required=True)
 @click.option(
     "--num-mismatches",
@@ -138,7 +127,7 @@ def summarise_match(ts, node_ids, h, result, mu, rho, *, log_likelihood=True):
     "--mismatch-threshold",
     type=int,
     default=None,
-    help="Likelihood threshold for tsinfer, in numbers of mismatches (as sc2ts)",
+    help="Prune at the exact threshold for this many mismatches (as sc2ts)",
 )
 @click.option(
     "--recombination-rate",
@@ -159,7 +148,6 @@ def summarise_match(ts, node_ids, h, result, mu, rho, *, log_likelihood=True):
 def main(
     ts_path,
     query_dir,
-    engine_names,
     output,
     num_mismatches,
     mismatch_threshold,
@@ -169,34 +157,27 @@ def main(
     limit,
 ):
     """
-    Run the HMM engines on the queries in QUERY_DIR against the benchmark ARG
-    at TS_PATH.
+    Run tsls on the queries in QUERY_DIR against the benchmark ARG at
+    TS_PATH.
 
     If QUERY_DIR contains a model.json (as made by tsinfer_data.py), its
-    parameters are used instead of --num-mismatches, and the tskit engine,
-    which cannot use them, is not available. --recombination-rate and
-    --mismatch override its parameters as tsinfer's recombination_rate and
-    mismatch would: the rate or genetic map gives per-site recombination
-    probabilities (tsls.model.recombination_probabilities).
+    parameters are used instead of --num-mismatches. --recombination-rate
+    and --mismatch override its parameters as tsinfer's recombination_rate
+    and mismatch would: the rate or genetic map gives per-site recombination
+    probabilities (tsls.recombination_probabilities).
     """
     model = queries.load_model(query_dir)
     recombination_rate = parse_recombination_rate(recombination_rate)
-    engine_options = {}
+    options = {"mismatch_threshold": mismatch_threshold}
     if model is None:
         if recombination_rate is not None or mismatch is not None:
             raise click.UsageError(
                 "--recombination-rate and --mismatch need a model.json"
             )
-        if len(engine_names) == 0:
-            engine_names = list(engines.ENGINES)
         if num_mismatches is None:
             num_mismatches = 3
-        mu, rho = engines.solve_num_mismatches(num_mismatches)
+        mu, rho = matcher.solve_num_mismatches(num_mismatches)
     else:
-        if len(engine_names) == 0:
-            engine_names = ["tsinfer", "tsls"]
-        if "tskit" in engine_names:
-            raise click.UsageError("The tskit engine does not support model.json")
         if num_mismatches is not None:
             raise click.UsageError("--num-mismatches cannot be used with model.json")
         mu = model["mu"] if mismatch is None else mismatch
@@ -205,16 +186,12 @@ def main(
             recombination_rate = parse_recombination_rate(
                 model.get("recombination_rate")
             )
-        engine_options = {
-            "weight_by_n": model["weight_by_n"],
-            "alleles": model["alleles"],
-        }
+        options["weight_by_n"] = model["weight_by_n"]
+        options["alleles"] = model["alleles"]
     ts = load_ts(ts_path)
     node_ids = subargs.load_node_ids(ts_path, ts)
     if recombination_rate is not None:
-        rho = tsls.model.recombination_probabilities(
-            recombination_rate, ts.sites_position
-        )
+        rho = tsls.recombination_probabilities(recombination_rate, ts.sites_position)
         click.echo(
             f"Recombination probabilities from {recombination_rate}: "
             f"min={np.min(rho[1:]):.3g} mean={np.mean(rho[1:]):.3g} "
@@ -230,67 +207,58 @@ def main(
 
     out_path = pathlib.Path(output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    done = completed_pairs(out_path)
+    done = completed_queries(out_path)
     write_header = len(done) == 0
+    todo = [qid for qid in df.query_id if qid not in done]
 
     with open(out_path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=RESULT_COLUMNS)
         if write_header:
             writer.writeheader()
-        for name in engine_names:
-            todo = [qid for qid in df.query_id if (qid, name) not in done]
-            if len(todo) == 0:
-                continue
-            before = time.perf_counter()
-            options = {}
-            if name in ("tsinfer", "tsls"):
-                options["mismatch_threshold"] = mismatch_threshold
-                options.update(engine_options)
-            engine = engines.ENGINES[name](ts, mu=mu, rho=rho, **options)
-            setup_time = time.perf_counter() - before
-            click.echo(f"Set up {name} in {setup_time:.2f}s")
-            for query_id in tqdm(todo, desc=name):
-                h = H[query_id]
-                start, end = queries.query_window(H, query_id)
-                row = {
-                    "query_id": query_id,
-                    "engine": name,
-                    "num_mismatches_param": num_mismatches,
-                    "mismatch_threshold": options.get("mismatch_threshold"),
-                    "mu": engine.mu,
-                    "rho": rho_summary(engine.rho),
-                    "recombination_rate": (
-                        "" if recombination_rate is None else recombination_rate
-                    ),
-                    "setup_time": setup_time,
-                }
-                wall_before = time.perf_counter()
-                cpu_before = time.thread_time()
-                try:
-                    if name == "tskit":
-                        result = engine.match(h)
-                    else:
-                        result = engine.match(h, start, end)
-                except Exception as e:  # noqa: BLE001 (record any failure)
-                    row["status"] = f"{type(e).__name__}: {e}"
-                else:
-                    row["status"] = "ok"
-                row["wall_time"] = time.perf_counter() - wall_before
-                row["cpu_time"] = time.thread_time() - cpu_before
-                if row["status"] == "ok":
-                    row.update(
-                        summarise_match(
-                            ts,
-                            node_ids,
-                            h,
-                            result,
-                            mu,
-                            rho,
-                            log_likelihood=model is None,
-                        )
+        if len(todo) == 0:
+            return
+        before = time.perf_counter()
+        m = matcher.Matcher(ts, mu=mu, rho=rho, **options)
+        setup_time = time.perf_counter() - before
+        click.echo(f"Set up tsls in {setup_time:.2f}s")
+        for query_id in tqdm(todo):
+            h = H[query_id]
+            start, end = queries.query_window(H, query_id)
+            row = {
+                "query_id": query_id,
+                "num_mismatches_param": num_mismatches,
+                "mismatch_threshold": mismatch_threshold,
+                "mu": mu,
+                "rho": rho_summary(rho),
+                "recombination_rate": (
+                    "" if recombination_rate is None else recombination_rate
+                ),
+                "setup_time": setup_time,
+            }
+            wall_before = time.perf_counter()
+            cpu_before = time.thread_time()
+            try:
+                result = m.match(h, start, end)
+            except Exception as e:  # noqa: BLE001 (record any failure)
+                row["status"] = f"{type(e).__name__}: {e}"
+            else:
+                row["status"] = "ok"
+            row["wall_time"] = time.perf_counter() - wall_before
+            row["cpu_time"] = time.thread_time() - cpu_before
+            if row["status"] == "ok":
+                row.update(
+                    summarise_match(
+                        ts,
+                        node_ids,
+                        h,
+                        result,
+                        mu,
+                        rho,
+                        log_likelihood=model is None,
                     )
-                writer.writerow(row)
-                f.flush()
+                )
+            writer.writerow(row)
+            f.flush()
 
 
 if __name__ == "__main__":

@@ -2,11 +2,11 @@
 Run tsls Viterbi on chr20p sample queries, for profiling and step counts.
 
 The reference is the samples workload's reference.trees with the vestigial
-root edges from node 0 removed (as engines.TslsEngine does), and the model
+root edges from node 0 removed (as matcher.Matcher does), and the model
 is tsinfer's: r = 0.01 or per-site probabilities from a genetic map, with
 weight_by_n=True (tsls's model). Prints the time, a hash of the path, the
-path's model log likelihood and the engine's statistics for each query, and the step counters if the extension was
-built with TSLS_STEP_COUNTERS.
+path's model log likelihood and the HMM's statistics for each query, and
+the step counters if the extension was built with TSLS_STEP_COUNTERS.
 
     uv run python profile_samples.py --map data/genetic_maps/chr20_HapMapII_GRCh38.txt
 """
@@ -20,7 +20,7 @@ import numpy as np
 import tskit
 import tsls
 
-import engines
+import matcher
 import queries
 
 WORKLOAD = "data/tgp_chr20p/samples"
@@ -47,9 +47,9 @@ def main(genetic_map, mu, query_ids, missing, repeats, index_min_sites):
     if genetic_map is None:
         r = np.full(m, 0.01)
     else:
-        r = tsls.model.recombination_probabilities(genetic_map, positions)
+        r = tsls.recombination_probabilities(genetic_map, positions)
     reference = tsls.TreeSequence(ts)
-    num_alleles = engines.site_num_alleles(ts, None)
+    num_alleles = matcher.site_num_alleles(ts, None)
     mu_array = np.full(m, mu)
     for qid in [int(q) for q in query_ids.split(",")]:
         h = H[qid].astype(np.int8)
@@ -68,7 +68,7 @@ def main(genetic_map, mu, query_ids, missing, repeats, index_min_sites):
             digest = hashlib.md5()
             for array in [left, right, parent, matched]:
                 digest.update(np.ascontiguousarray(array).tobytes())
-            log_likelihood = engines.model_path_log_likelihood(
+            log_likelihood = matcher.model_path_log_likelihood(
                 h,
                 matched,
                 left[::-1],

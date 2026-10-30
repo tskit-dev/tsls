@@ -2,18 +2,28 @@
 
 This document defines the HMM that tsls computes, shows that sc2ts's
 "k mismatches per recombination" setting is a choice of parameters in this
-model, and derives exact Viterbi thresholds from it. The functions in
-`tsls.model` implement the formulas, and `tsls/tests/test_model.py` checks
-them.
+model, and derives exact Viterbi thresholds from it. The functions
+`tsls.switch_odds`, `recombination_probability`, `mismatch_odds`,
+`mismatch_probability` and `path_threshold` implement the formulas, and
+`tests/test_model.py` checks them.
 
 ## The model
 
 The states at site j are the nodes in the local tree T_j: the nodes with a
 parent or at least one child. Let n be the number of nodes in the tree
 sequence, r_j the recombination probability and mu_j the mismatch
-probability at site j, and A_j the number of alleles at the site.
+probability at site j, and A_j the number of alleles at the site. If the
+alleles are given (`tsls.TreeSequence(ts, alleles=...)`), A_j is the length
+of site j's list, whether or not the alleles are all in the tree sequence
+there. Otherwise A_j is the number of distinct states at the site in the
+tree sequence, and at least 2.
 
-**Start.** The path starts at a node chosen uniformly from all n nodes.
+**Start.** The path starts at a node chosen uniformly from all n nodes. The
+transition below is applied at the first site too, so each node in T_0
+starts with probability `(1 - r_0 + r_0 P_0 / n) / n`, where P_0 is the
+number of nodes in T_0. This is the same for every node, so it doesn't
+affect Viterbi paths or posteriors, but it makes the likelihood depend on
+which end of the sequence the path starts from.
 
 **Transition** into site j. With probability r_j the path recombines and
 copies a node chosen uniformly from all n nodes. Otherwise it stays on the
@@ -64,7 +74,7 @@ where C_j(u) is the cost of the best path that is at u at site j
 (`test_viterbi_values_are_odds`). Viterbi needs only q_j and e_j. Forward
 and backward also need r_j itself, because they sum over paths.
 
-`tsls.model.switch_odds(r, n)` and `tsls.model.recombination_probability(q, n)`
+`tsls.switch_odds(r, n)` and `tsls.recombination_probability(q, n)`
 convert between r and q:
 
     q = (r / n) / (1 - r + r / n),        r = q n / (1 - q + q n).
@@ -126,7 +136,9 @@ normalised Viterbi value is below t the value `likelihood_threshold`
 (effectively 0). From then on it can only be reached by recombination.
 Pruning only lowers values. The old `likelihood_threshold` *floor* raises
 values instead. Above q, a raised node beats recombination and keeps stale
-copying targets alive (`experiments/thresholding`, finding 2). The floor is
+copying targets alive: on the larger tsinfer chr20p benchmarks (ancestor
+group 1485 and sample matching), floors of 1e-4 and
+1e-2 missed the optimal path for every query. The floor is
 now only there to prevent underflow, and should stay below q.
 
 **Theorem.** Let P* be an optimal path, with cost C*. If `t <= exp(-C*)`,
@@ -148,7 +160,7 @@ costs over the sites. So
 
 finds the optimal path whenever it has at most k mismatches and s switches.
 With constant rates this is `e^k q^s`. This is
-`tsls.model.path_threshold(k, mu, num_alleles, num_switches=s, ...)`.
+`tsls.path_threshold(k, mu, num_alleles, num_switches=s, ...)`.
 
 **It is the largest such threshold.** If an optimal path has its k
 mismatches at the first k sites, at which another node matches, then it is
@@ -172,7 +184,7 @@ this.
 **Free pruning.** A node with value below `q_{j+1}` is overtaken at site
 j + 1 by recombination from the best node, whatever its value. So pruning
 below `min_j q_j` changes no values at later sites
-(`tsls.model.lossless_threshold`). The k-mismatch threshold is useful when
+(`tsls.lossless_threshold`). The k-mismatch threshold is useful when
 it is above this, that is, when k mismatches cost less than a switch.
 
 ### Worked example: sc2ts parameters

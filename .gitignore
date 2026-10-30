@@ -221,13 +221,17 @@ __marimo__/
 # Meson
 .wraplock
 
-# Benchmarking data and results
+# Verification output
+verification/tmp__NOBACKUP__/
+
+# Written by setuptools_scm
+tsls/_version.py
+
+# Benchmark data and results
 benchmarking/data/
 benchmarking/results/
 benchmarking/callgrind/
 
-# Verification output
-verification/tmp__NOBACKUP__/
-
-# Experiment results
-experiments/*/results/
+# Downloaded by meson for the C tests
+lib/subprojects/packagecache/
+lib/subprojects/tskit-*/

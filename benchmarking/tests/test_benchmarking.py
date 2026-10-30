@@ -1,8 +1,9 @@
 import msprime
 import numpy as np
 import pytest
+import tsls
 
-import engines
+import matcher
 import prepare
 import queries
 import subargs
@@ -147,13 +148,13 @@ class TestQueries:
         assert list(hq[[1, 3]]) == [-1, -1]
 
 
-@pytest.fixture(scope="module", params=list(engines.ENGINES))
-def engine(request, ts):
-    mu, rho = engines.solve_num_mismatches(3)
-    return engines.ENGINES[request.param](ts, mu=mu, rho=rho)
+@pytest.fixture(scope="module", params=[None, 1])
+def tsls_matcher(request, ts):
+    mu, rho = matcher.solve_num_mismatches(3)
+    return matcher.Matcher(ts, mu=mu, rho=rho, mismatch_threshold=request.param)
 
 
-class TestEngines:
+class TestMatcher:
     def check_path(self, ts, result):
         left, right, parent, _, _ = result
         assert left[0] == 0
@@ -161,104 +162,49 @@ class TestEngines:
         np.testing.assert_array_equal(left[1:], right[:-1])
         assert np.all(left < right)
         assert np.all(parent[1:] != parent[:-1])
+        # The vestigial root is never copied
+        assert 0 not in parent
 
-    def test_exact_copy(self, ts, engine, query_set):
+    def test_exact_copy(self, ts, tsls_matcher, query_set):
         df = query_set.dataframe()
         for row in df[(df.kind == "copy") & (df.k == 0)].itertuples():
             h = query_set.haplotypes[row.query_id]
-            result = engine.match(h)
+            result = tsls_matcher.match(h)
             self.check_path(ts, result)
-            left, right, parent, _, _ = result
-            matched = engines.path_haplotype(ts, left, right, parent)
+            left, right, parent, matched, _ = result
             np.testing.assert_array_equal(matched, h)
             assert len(parent) == 1
 
-    def test_all_queries(self, ts, engine, query_set):
+    def test_all_queries(self, ts, tsls_matcher, query_set):
         for h in query_set.haplotypes:
-            result = engine.match(h)
+            result = tsls_matcher.match(h)
             self.check_path(ts, result)
-            left, right, parent, matched, _ = result
-            path_h = engines.path_haplotype(ts, left, right, parent)
-            if matched is not None:
-                np.testing.assert_array_equal(matched, path_h)
+            left, right, parent, matched, stats = result
+            path_h = matcher.path_haplotype(ts, left, right, parent)
+            np.testing.assert_array_equal(matched, path_h)
+            assert stats["total_memory"] > 0
 
-    def test_tskit_copies_samples_only(self, ts, query_set):
-        mu, rho = engines.solve_num_mismatches(3)
-        engine = engines.TskitEngine(ts, mu=mu, rho=rho)
-        for h in query_set.haplotypes:
-            _, _, parent, _, _ = engine.match(h)
-            assert np.all(np.isin(parent, ts.samples()))
+    def test_copy_divergence(self, ts, query_set):
+        # A copy with k mismatches has a path with at most k mismatches,
+        # and k mismatches cost less than one recombination with k = 3.
+        mu, rho = matcher.solve_num_mismatches(3)
+        m = matcher.Matcher(ts, mu=mu, rho=rho)
+        df = query_set.dataframe()
+        for row in df[df.kind == "copy"].itertuples():
+            h = query_set.haplotypes[row.query_id]
+            _, _, parent, matched, _ = m.match(h)
+            num_mismatches = np.sum(h != matched)
+            cost = 3 * (len(parent) - 1) + num_mismatches
+            assert cost <= row.k
 
-
-def all_nodes_samples(ts):
-    """
-    Return a copy of the specified tree sequence in which every node except
-    the vestigial root is a sample, so that both engines can copy the same
-    nodes.
-    """
-    tables = ts.dump_tables()
-    flags = tables.nodes.flags
-    flags[1:] |= 1
-    tables.nodes.flags = flags
-    return tables.tree_sequence()
-
-
-def path_values(ts, engine, h, mu, rho):
-    """
-    Return the (path_log_likelihood, stats) tuple for the specified engine's
-    match of the specified haplotype.
-    """
-    left, right, parent, _, stats = engine.match(h)
-    matched = engines.path_haplotype(ts, left, right, parent)
-    return engines.path_log_likelihood(h, len(parent), matched, mu, rho), stats
-
-
-class TestEnginesAgree:
-    """
-    The engines optimise the same model, which we check by comparing path
-    likelihoods with the optimum from the tskit forward pass.
-    """
-
-    @pytest.mark.parametrize("num_mismatches", [2, 3, 5])
-    def test_tskit_path_optimal_leaf_samples(self, ts, query_set, num_mismatches):
-        assert all(ts.first().is_leaf(u) for u in ts.samples())
-        mu, rho = engines.solve_num_mismatches(num_mismatches)
-        engine = engines.TskitEngine(ts, mu=mu, rho=rho)
-        for h in query_set.haplotypes:
-            value, stats = path_values(ts, engine, h, mu, rho)
-            assert value == pytest.approx(stats["optimum_log_likelihood"], rel=1e-6)
-
-    @pytest.mark.parametrize("num_mismatches", [2, 3, 5])
-    def test_tsinfer_at_least_tskit_optimum(self, ts, query_set, num_mismatches):
-        # tsinfer can copy from internal nodes as well as the samples
-        mu, rho = engines.solve_num_mismatches(num_mismatches)
-        tsinfer_engine = engines.TsinferEngine(ts, mu=mu, rho=rho)
-        tskit_engine = engines.TskitEngine(ts, mu=mu, rho=rho)
-        num_better = 0
-        for h in query_set.haplotypes:
-            value, _ = path_values(ts, tsinfer_engine, h, mu, rho)
-            optimum = tskit_engine.match(h)[-1]["optimum_log_likelihood"]
-            assert value >= optimum - 1e-6 * abs(optimum)
-            num_better += value > optimum + 1e-6 * abs(optimum)
-        assert num_better < len(query_set.haplotypes)
-
-    @pytest.mark.xfail(
-        reason="tskit-hmm forward pass and traceback are suboptimal with "
-        "internal samples",
-        strict=True,
-    )
-    def test_agree_internal_samples(self, ts, query_set):
-        # If every node is a sample, both engines can copy the same nodes.
-        ts = all_nodes_samples(ts)
-        mu, rho = engines.solve_num_mismatches(3)
-        tsinfer_engine = engines.TsinferEngine(ts, mu=mu, rho=rho)
-        tskit_engine = engines.TskitEngine(ts, mu=mu, rho=rho)
-        for h in query_set.haplotypes:
-            tsinfer_value, _ = path_values(ts, tsinfer_engine, h, mu, rho)
-            tskit_value, stats = path_values(ts, tskit_engine, h, mu, rho)
-            optimum = stats["optimum_log_likelihood"]
-            assert tsinfer_value == pytest.approx(optimum, rel=1e-6)
-            assert tskit_value == pytest.approx(optimum, rel=1e-6)
+    def test_weight_by_n(self, ts):
+        # With weight_by_n=False, rho is the switch odds.
+        mu, rho = matcher.solve_num_mismatches(3)
+        m = matcher.Matcher(ts, mu=mu, rho=rho)
+        q = tsls.switch_odds(m.recombination, ts.num_nodes)
+        np.testing.assert_allclose(q, rho)
+        m = matcher.Matcher(ts, mu=mu, rho=rho, weight_by_n=True)
+        np.testing.assert_allclose(m.recombination, rho)
 
 
 @pytest.fixture(scope="module")
@@ -340,23 +286,20 @@ class TestSubArgs:
             if row["kind"] == "copy":
                 np.testing.assert_array_equal(h, source[0])
 
-    @pytest.mark.parametrize("name", list(engines.ENGINES))
-    def test_engines_run(self, serial_ts, name):
+    def test_matcher_runs(self, serial_ts):
         sub_ts, _ = subargs.sub_arg(serial_ts, 1)
-        mu, rho = engines.solve_num_mismatches(3)
-        engine = engines.ENGINES[name](sub_ts, mu=mu, rho=rho)
+        mu, rho = matcher.solve_num_mismatches(3)
+        m = matcher.Matcher(sub_ts, mu=mu, rho=rho)
         for h in queries.node_haplotypes(sub_ts, sub_ts.samples()):
-            left, right, parent, _, _ = engine.match(h)
-            matched = engines.path_haplotype(sub_ts, left, right, parent)
+            _, _, _, matched, _ = m.match(h)
             np.testing.assert_array_equal(matched, h)
 
 
 class TestParameters:
-    def test_path_to_segments(self):
-        positions = np.array([1.0, 3, 5, 7])
-        left, right, parent = engines.path_to_segments(
-            np.array([4, 4, 2, 2]), positions, 10
-        )
-        assert list(left) == [0, 5]
-        assert list(right) == [5, 10]
-        assert list(parent) == [4, 2]
+    @pytest.mark.parametrize("k", [2, 3, 5])
+    def test_solve_num_mismatches(self, k):
+        # A recombination is slightly more likely than k mismatches.
+        mu, rho = matcher.solve_num_mismatches(k)
+        e = mu / (1 - 3 * mu)
+        assert rho > e**k
+        assert rho < e ** (k - 1)

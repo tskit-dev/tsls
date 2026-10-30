@@ -1,8 +1,8 @@
 """
 Summarise run.py results on workloads made by tsinfer_data.py.
 
-For each workload and engine, report how often the engine found the same
-path as tsinfer, along with its time and memory, and the time tsinfer
+For each workload, report how often tsls found the same path as tsinfer,
+along with its time and memory, and the time tsinfer
 recorded for matching the whole group. The model parameters are reported
 too, so that runs of the same workload with different parameters (such as
 a recombination map) can be compared.
@@ -18,7 +18,7 @@ import pandas as pd
 
 def parse_stats(stats):
     """
-    Return the dict of engine statistics in a stats column value.
+    Return the dict of tsls statistics in a stats column value.
     """
     items = (item.split("=") for item in str(stats).split())
     return {key: float(value) for key, value in items}
@@ -27,7 +27,7 @@ def parse_stats(stats):
 def join_truth(results, query_dir):
     """
     Return the results joined with the query metadata, with a same_path
-    column saying whether the engine's path is the one tsinfer found.
+    column saying whether the path is the one tsinfer found.
     """
     df = pd.read_csv(query_dir / "queries.csv")
     df = results.merge(df, on="query_id", how="left", validate="many_to_one")
@@ -58,31 +58,26 @@ def summarise(results_path, query_dir):
     df = join_truth(pd.read_csv(results_path), query_dir)
     with open(query_dir / "tsinfer_group.json") as f:
         group = json.load(f)
-    rows = []
-    for engine, d in df.groupby("engine", sort=False):
-        ok = d[d.status == "ok"]
-        rows.append(
-            {
-                "workload": query_dir.name,
-                "engine": engine,
-                "recombination": recombination_label(d),
-                "mu": " ".join(f"{mu:.3g}" for mu in sorted(d.mu.unique())),
-                "queries": len(d),
-                "failed": int(np.sum(d.status != "ok")),
-                "mean sites": np.mean(ok.end - ok.start),
-                "same path": np.mean(ok.same_path),
-                "segment diff": np.mean(ok.num_segments - ok.truth_num_segments),
-                "mean mismatches": np.mean(ok.num_mismatches),
-                "mean time (s)": np.mean(ok.wall_time),
-                "max time (s)": np.max(ok.wall_time),
-                "mean memory (MiB)": np.mean(ok.total_memory) / 2**20,
-                "mean traceback": np.mean(ok.mean_traceback_size),
-                "group size": group["num_haplotypes"],
-                "tsinfer CPU time per haplotype (s)": group["user_time"]
-                / group["num_haplotypes"],
-            }
-        )
-    return pd.DataFrame(rows)
+    ok = df[df.status == "ok"]
+    row = {
+        "workload": query_dir.name,
+        "recombination": recombination_label(df),
+        "mu": " ".join(f"{mu:.3g}" for mu in sorted(df.mu.unique())),
+        "queries": len(df),
+        "failed": int(np.sum(df.status != "ok")),
+        "mean sites": np.mean(ok.end - ok.start),
+        "same path": np.mean(ok.same_path),
+        "segment diff": np.mean(ok.num_segments - ok.truth_num_segments),
+        "mean mismatches": np.mean(ok.num_mismatches),
+        "mean time (s)": np.mean(ok.wall_time),
+        "max time (s)": np.max(ok.wall_time),
+        "mean memory (MiB)": np.mean(ok.total_memory) / 2**20,
+        "mean traceback": np.mean(ok.mean_traceback_size),
+        "group size": group["num_haplotypes"],
+        "tsinfer CPU time per haplotype (s)": group["user_time"]
+        / group["num_haplotypes"],
+    }
+    return pd.DataFrame([row])
 
 
 @click.command()

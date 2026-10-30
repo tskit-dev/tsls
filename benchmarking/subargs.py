@@ -1,6 +1,6 @@
 """
 Make a series of nested sub-ARGs of a benchmark ARG, for measuring how
-the engines scale with ARG size.
+tsls scales with ARG size.
 
 sc2ts adds samples day by day, so the natural sub-ARG is the ARG "as of"
 an earlier date: all nodes at least as old as a time cutoff, and the
@@ -74,8 +74,9 @@ def sub_arg(ts, min_time):
 
     # Remove the parts of the ARG that are not ancestral to the remaining
     # samples. These are ancestors that sc2ts added later along with their
-    # descendants, and tskit-hmm requires every node in a tree to have
-    # samples below it. Simplifying without filtering nodes keeps node IDs
+    # descendants (and tskit's engine, which tsls was compared with, required
+    # every node in a tree to have samples below it). Simplifying without
+    # filtering nodes keeps node IDs
     # (and so the vestigial root 0 above node 1), and the unary nodes
     # keep the sc2ts topology.
     tables.simplify(

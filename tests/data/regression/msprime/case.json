@@ -1,0 +1,9 @@
+{
+  "description": "An msprime simulation of 18 haploid samples with multiallelic JC69 sites, with 6 held-out samples (and the same with 3 mutations) as queries.",
+  "alleles": [
+    "A",
+    "C",
+    "G",
+    "T"
+  ]
+}
