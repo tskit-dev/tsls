@@ -126,7 +126,9 @@ normalised Viterbi value is below t the value `likelihood_threshold`
 (effectively 0). From then on it can only be reached by recombination.
 Pruning only lowers values. The old `likelihood_threshold` *floor* raises
 values instead. Above q, a raised node beats recombination and keeps stale
-copying targets alive (`experiments/thresholding`, finding 2). The floor is
+copying targets alive: on the larger tsinfer chr20p benchmarks (ancestor
+group 1485 and sample matching), floors of 1e-4 and
+1e-2 missed the optimal path for every query. The floor is
 now only there to prevent underflow, and should stay below q.
 
 **Theorem.** Let P* be an optimal path, with cost C*. If `t <= exp(-C*)`,

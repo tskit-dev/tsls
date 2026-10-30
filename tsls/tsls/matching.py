@@ -178,9 +178,8 @@ class Hmm(_tsls.Hmm):
     switch odds. ``relative_prune_threshold`` f also sets the values of
     nodes less than f times the maximum to likelihood_threshold, in Viterbi,
     forward and backward. This is approximate (pruning relative to the
-    switch odds, f = c q with c <= 1, is accurate in practice; see
-    experiments/thresholding); in Viterbi it is the same as a prune
-    threshold of f. If ``count_distinct``
+    switch odds, f = c q with c <= 1, was accurate on the sc2ts and tsinfer
+    benchmarks); in Viterbi it is the same as a prune threshold of f. If ``count_distinct``
     is True, the mean number of distinct values per site in Viterbi is
     recorded in ``mean_num_distinct_values``.
 

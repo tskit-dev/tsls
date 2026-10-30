@@ -119,8 +119,7 @@ def node_states(ts):
 def hmm_params(k, num_alleles=NUM_ALLELES):
     """
     Return the (mu, rho) tuple for which k mismatches have about the same
-    likelihood as one recombination, with weight_by_n=False (as in sc2ts and
-    benchmarking/engines.py).
+    likelihood as one recombination, with weight_by_n=False (as in sc2ts).
     """
     mu = 0.0125
     denom = mu**k + (1 - (num_alleles - 1) * mu) ** k
@@ -150,7 +149,7 @@ def make_matcher(
 ):
     """
     Return a tsls.Hmm. With weight_by_n=False, rho is the recombination of
-    an engine that does not divide by n, as in tsinfer-hmm and sc2ts. tsls
+    an engine that does not divide by n, as in sc2ts. tsls
     always divides by n, so we give it the recombination probability with
     the same switch odds. This gives the same Viterbi paths and posteriors
     (docs/likelihood_model.md); only the forward log likelihood differs.

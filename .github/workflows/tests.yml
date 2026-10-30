@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [tsinfer-hmm, tskit-hmm, tsls]
+        package: [tsls]
     defaults:
       run:
         working-directory: ${{ matrix.package }}
@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [tsinfer-hmm, tskit-hmm, tsls]
+        package: [tsls]
         python: ["3.11", "3.13"]
         os: [ubuntu-24.04, macos-latest]
     defaults:

@@ -1,13 +1,17 @@
-# Licensing of tsinfer-hmm
+# Licensing
 
-The code in this directory was copied from
+tsls is distributed under the MIT License (see `LICENSE`).
+
+The HMM engine in tsls is derived from tsinfer's Li and Stephens HMM
+matching engine. tsinfer is distributed under the GNU General Public
+License, version 3 or later (GPL-3.0-or-later). The tsinfer code was first
+copied into this repository as `tsinfer-hmm/`, from
 [tsinfer](https://github.com/tskit-dev/tsinfer) at commit
-`53d7363bc311ada143ae7624d6f44a608018a000`. tsinfer is distributed under
-the GNU General Public License, version 3 or later (GPL-3.0-or-later).
-
-In tsls, this code is distributed under the MIT License (see the
-top-level `LICENSE` file). This document records how that relicensing was
-done.
+`53d7363bc311ada143ae7624d6f44a608018a000`, and relicensed to MIT. The
+tsls engine was then developed from that copy, which has since been
+removed (it is in the git history). This document records how the
+relicensing was done. The paths below are those of the copy, which match
+the paths in tsinfer.
 
 ## Relicensing statement
 

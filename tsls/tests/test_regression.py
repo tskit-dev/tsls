@@ -1,7 +1,8 @@
 """
 Regression tests on cases captured from the benchmark workloads when the
-tsinfer-hmm engine was still in this repository (see the capture script,
-benchmarking/capture_regression.py, in the git history).
+tsinfer-hmm engine was still in this repository (the capture script,
+benchmarking/capture_regression.py, and the benchmarks are in the git
+history).
 
 Each case in data/regression has a gzipped reference tree sequence, query
 haplotypes with their windows, the per-site recombination and mismatch
