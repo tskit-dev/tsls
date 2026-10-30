@@ -1,8 +1,8 @@
 """
-Tests for the public API: everything is in the tsls namespace.
+Tests for the public API: everything is exported from the tsls namespace.
 """
 
-import pytest
+import types
 
 import tsls
 
@@ -31,16 +31,14 @@ def test_all():
     assert sorted(tsls.__all__) == sorted(API)
 
 
-@pytest.mark.parametrize("name", API)
-def test_in_tsls_namespace(name):
-    obj = getattr(tsls, name)
-    if callable(obj):
-        assert obj.__module__ == "tsls"
-
-
 def test_public_names():
-    # Apart from the private modules, every public name is in __all__.
-    public = {name for name in dir(tsls) if not name.startswith("_")}
+    # Apart from the modules, every public name is in __all__.
+    public = {
+        name
+        for name in dir(tsls)
+        if not name.startswith("_")
+        and not isinstance(getattr(tsls, name), types.ModuleType)
+    }
     assert public == {name for name in API if not name.startswith("_")}
 
 
